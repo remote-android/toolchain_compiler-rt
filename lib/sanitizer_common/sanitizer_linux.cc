@@ -99,6 +99,12 @@ const int FUTEX_WAKE = 1;
 # define SANITIZER_LINUX_USES_64BIT_SYSCALLS 0
 #endif
 
+#if defined(__x86_64__)
+extern "C" {
+extern void internal_sigreturn();
+}
+#endif
+
 namespace __sanitizer {
 
 #if SANITIZER_LINUX && defined(__x86_64__)
@@ -110,6 +116,7 @@ namespace __sanitizer {
 #endif
 
 // --------------- sanitizer_libc.h
+#if !SANITIZER_S390
 uptr internal_mmap(void *addr, uptr length, int prot, int flags, int fd,
                    OFF_T offset) {
 #if SANITIZER_FREEBSD || SANITIZER_LINUX_USES_64BIT_SYSCALLS
@@ -122,6 +129,7 @@ uptr internal_mmap(void *addr, uptr length, int prot, int flags, int fd,
                           offset / 4096);
 #endif
 }
+#endif // !SANITIZER_S390
 
 uptr internal_munmap(void *addr, uptr length) {
   return internal_syscall(SYSCALL(munmap), (uptr)addr, length);
@@ -334,6 +342,15 @@ void internal__exit(int exitcode) {
   Die();  // Unreachable.
 }
 
+unsigned int internal_sleep(unsigned int seconds) {
+  struct timespec ts;
+  ts.tv_sec = 1;
+  ts.tv_nsec = 0;
+  int res = internal_syscall(SYSCALL(nanosleep), &ts, &ts);
+  if (res) return ts.tv_sec;
+  return 0;
+}
+
 uptr internal_execve(const char *filename, char *const argv[],
                      char *const envp[]) {
   return internal_syscall(SYSCALL(execve), (uptr)filename, (uptr)argv,
@@ -464,12 +481,13 @@ static void GetArgsAndEnv(char ***argv, char ***envp) {
 #else
   // On FreeBSD, retrieving the argument and environment arrays is done via the
   // kern.ps_strings sysctl, which returns a pointer to a structure containing
-  // this information.  If the sysctl is not available, a "hardcoded" address,
-  // PS_STRINGS, must be used instead.  See also <sys/exec.h>.
+  // this information. See also <sys/exec.h>.
   ps_strings *pss;
   size_t sz = sizeof(pss);
-  if (sysctlbyname("kern.ps_strings", &pss, &sz, NULL, 0) == -1)
-    pss = (ps_strings*)PS_STRINGS;
+  if (sysctlbyname("kern.ps_strings", &pss, &sz, NULL, 0) == -1) {
+    Printf("sysctl kern.ps_strings failed\n");
+    Die();
+  }
   *argv = pss->ps_argvstr;
   *envp = pss->ps_envstr;
 #endif
@@ -604,7 +622,8 @@ int internal_fork() {
 
 #if SANITIZER_LINUX
 #define SA_RESTORER 0x04000000
-// Doesn't set sa_restorer, use with caution (see below).
+// Doesn't set sa_restorer if the caller did not set it, so use with caution
+//(see below).
 int internal_sigaction_norestorer(int signum, const void *act, void *oldact) {
   __sanitizer_kernel_sigaction_t k_act, k_oldact;
   internal_memset(&k_act, 0, sizeof(__sanitizer_kernel_sigaction_t));
@@ -648,6 +667,25 @@ int internal_sigaction_norestorer(int signum, const void *act, void *oldact) {
   }
   return result;
 }
+
+// Invokes sigaction via a raw syscall with a restorer, but does not support
+// all platforms yet.
+// We disable for Go simply because we have not yet added to buildgo.sh.
+#if defined(__x86_64__) && !SANITIZER_GO
+int internal_sigaction_syscall(int signum, const void *act, void *oldact) {
+  if (act == nullptr)
+    return internal_sigaction_norestorer(signum, act, oldact);
+  __sanitizer_sigaction u_adjust;
+  internal_memcpy(&u_adjust, act, sizeof(u_adjust));
+#if !SANITIZER_ANDROID || !SANITIZER_MIPS32
+    if (u_adjust.sa_restorer == nullptr) {
+      u_adjust.sa_restorer = internal_sigreturn;
+    }
+#endif
+    return internal_sigaction_norestorer(signum, (const void *)&u_adjust,
+                                         oldact);
+}
+#endif // defined(__x86_64__) && !SANITIZER_GO
 #endif  // SANITIZER_LINUX
 
 uptr internal_sigprocmask(int how, __sanitizer_sigset_t *set,
@@ -667,6 +705,10 @@ void internal_sigfillset(__sanitizer_sigset_t *set) {
   internal_memset(set, 0xff, sizeof(*set));
 }
 
+void internal_sigemptyset(__sanitizer_sigset_t *set) {
+  internal_memset(set, 0, sizeof(*set));
+}
+
 #if SANITIZER_LINUX
 void internal_sigdelset(__sanitizer_sigset_t *set, int signum) {
   signum -= 1;
@@ -676,6 +718,16 @@ void internal_sigdelset(__sanitizer_sigset_t *set, int signum) {
   const uptr idx = signum / (sizeof(k_set->sig[0]) * 8);
   const uptr bit = signum % (sizeof(k_set->sig[0]) * 8);
   k_set->sig[idx] &= ~(1 << bit);
+}
+
+bool internal_sigismember(__sanitizer_sigset_t *set, int signum) {
+  signum -= 1;
+  CHECK_GE(signum, 0);
+  CHECK_LT(signum, sizeof(*set) * 8);
+  __sanitizer_kernel_sigset_t *k_set = (__sanitizer_kernel_sigset_t *)set;
+  const uptr idx = signum / (sizeof(k_set->sig[0]) * 8);
+  const uptr bit = signum % (sizeof(k_set->sig[0]) * 8);
+  return k_set->sig[idx] & (1 << bit);
 }
 #endif  // SANITIZER_LINUX
 
@@ -957,8 +1009,18 @@ uptr internal_clone(int (*fn)(void *), void *child_stack, int flags, void *arg,
                        "bnez $2,1f;\n"
 
                        /* Call "fn(arg)". */
+#if SANITIZER_WORDSIZE == 32
+#ifdef __BIG_ENDIAN__
+                       "lw $25,4($29);\n"
+                       "lw $4,12($29);\n"
+#else
+                       "lw $25,0($29);\n"
+                       "lw $4,8($29);\n"
+#endif
+#else
                        "ld $25,0($29);\n"
                        "ld $4,8($29);\n"
+#endif
                        "jal $25;\n"
 
                        /* Call _exit($v0). */
@@ -1312,6 +1374,15 @@ void GetPcSpBp(void *context, uptr *pc, uptr *sp, uptr *bp) {
   *pc = ucontext->uc_mcontext.pc;
   *bp = ucontext->uc_mcontext.gregs[30];
   *sp = ucontext->uc_mcontext.gregs[29];
+#elif defined(__s390__)
+  ucontext_t *ucontext = (ucontext_t*)context;
+# if defined(__s390x__)
+  *pc = ucontext->uc_mcontext.psw.addr;
+# else
+  *pc = ucontext->uc_mcontext.psw.addr & 0x7fffffff;
+# endif
+  *bp = ucontext->uc_mcontext.gregs[11];
+  *sp = ucontext->uc_mcontext.gregs[15];
 #else
 # error "Unsupported arch"
 #endif

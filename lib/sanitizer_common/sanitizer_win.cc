@@ -97,21 +97,19 @@ void UnmapOrDie(void *addr, uptr size) {
   if (!size || !addr)
     return;
 
-  // Make sure that this API is only used to unmap an entire previous mapping.
-  // Windows cannot unmap part of a previous mapping. Unfortunately,
-  // we can't check that size matches the original size because mbi.RegionSize
-  // doesn't describe the size of the full allocation if some of the pages were
-  // protected.
   MEMORY_BASIC_INFORMATION mbi;
   CHECK(VirtualQuery(addr, &mbi, sizeof(mbi)));
-  CHECK(mbi.AllocationBase == addr &&
-        "Windows cannot unmap part of a previous mapping");
 
+  // MEM_RELEASE can only be used to unmap whole regions previously mapped with
+  // VirtualAlloc. So we first try MEM_RELEASE since it is better, and if that
+  // fails try MEM_DECOMMIT.
   if (VirtualFree(addr, 0, MEM_RELEASE) == 0) {
-    Report("ERROR: %s failed to "
-           "deallocate 0x%zx (%zd) bytes at address %p (error code: %d)\n",
-           SanitizerToolName, size, size, addr, GetLastError());
-    CHECK("unable to unmap" && 0);
+    if (VirtualFree(addr, size, MEM_DECOMMIT) == 0) {
+      Report("ERROR: %s failed to "
+             "deallocate 0x%zx (%zd) bytes at address %p (error code: %d)\n",
+             SanitizerToolName, size, size, addr, GetLastError());
+      CHECK("unable to unmap" && 0);
+    }
   }
 }
 
@@ -173,9 +171,16 @@ void *MmapAlignedOrDie(uptr size, uptr alignment, const char *mem_type) {
 void *MmapFixedNoReserve(uptr fixed_addr, uptr size, const char *name) {
   // FIXME: is this really "NoReserve"? On Win32 this does not matter much,
   // but on Win64 it does.
-  (void)name; // unsupported
-  void *p = VirtualAlloc((LPVOID)fixed_addr, size,
-      MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  (void)name;  // unsupported
+#if SANITIZER_WINDOWS64
+  // On Windows64, use MEM_COMMIT would result in error
+  // 1455:ERROR_COMMITMENT_LIMIT.
+  // We use exception handler to commit page on demand.
+  void *p = VirtualAlloc((LPVOID)fixed_addr, size, MEM_RESERVE, PAGE_READWRITE);
+#else
+  void *p = VirtualAlloc((LPVOID)fixed_addr, size, MEM_RESERVE | MEM_COMMIT,
+                         PAGE_READWRITE);
+#endif
   if (p == 0)
     Report("ERROR: %s failed to "
            "allocate %p (%zd) bytes at %p (error code: %d)\n",
@@ -183,9 +188,11 @@ void *MmapFixedNoReserve(uptr fixed_addr, uptr size, const char *name) {
   return p;
 }
 
+// Memory space mapped by 'MmapFixedOrDie' must have been reserved by
+// 'MmapFixedNoAccess'.
 void *MmapFixedOrDie(uptr fixed_addr, uptr size) {
   void *p = VirtualAlloc((LPVOID)fixed_addr, size,
-      MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+      MEM_COMMIT, PAGE_READWRITE);
   if (p == 0) {
     char mem_type[30];
     internal_snprintf(mem_type, sizeof(mem_type), "memory at address 0x%zx",
@@ -200,15 +207,20 @@ void *MmapNoReserveOrDie(uptr size, const char *mem_type) {
   return MmapOrDie(size, mem_type);
 }
 
-void *MmapNoAccess(uptr fixed_addr, uptr size, const char *name) {
+void *MmapFixedNoAccess(uptr fixed_addr, uptr size, const char *name) {
   (void)name; // unsupported
   void *res = VirtualAlloc((LPVOID)fixed_addr, size,
-                           MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS);
+                           MEM_RESERVE, PAGE_NOACCESS);
   if (res == 0)
     Report("WARNING: %s failed to "
            "mprotect %p (%zd) bytes at %p (error code: %d)\n",
            SanitizerToolName, size, size, fixed_addr, GetLastError());
   return res;
+}
+
+void *MmapNoAccess(uptr size) {
+  // FIXME: unsupported.
+  return nullptr;
 }
 
 bool MprotectNoAccess(uptr addr, uptr size) {
@@ -392,6 +404,7 @@ void Abort() {
   internal__exit(3);
 }
 
+#ifndef SANITIZER_GO
 // Read the file to extract the ImageBase field from the PE header. If ASLR is
 // disabled and this virtual address is available, the loader will typically
 // load the image at this address. Therefore, we call it the preferred base. Any
@@ -444,7 +457,6 @@ static uptr GetPreferredBase(const char *modname) {
   return (uptr)pe_header->ImageBase;
 }
 
-#ifndef SANITIZER_GO
 void ListOfModules::init() {
   clear();
   HANDLE cur_process = GetCurrentProcess();
@@ -530,14 +542,15 @@ __declspec(allocate(".CRT$XID")) int (*__run_atexit)() = RunAtexit;
 
 // ------------------ sanitizer_libc.h
 fd_t OpenFile(const char *filename, FileAccessMode mode, error_t *last_error) {
+  // FIXME: Use the wide variants to handle Unicode filenames.
   fd_t res;
   if (mode == RdOnly) {
-    res = CreateFile(filename, GENERIC_READ,
-                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    res = CreateFileA(filename, GENERIC_READ,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   } else if (mode == WrOnly) {
-    res = CreateFile(filename, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                     FILE_ATTRIBUTE_NORMAL, nullptr);
+    res = CreateFileA(filename, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                      FILE_ATTRIBUTE_NORMAL, nullptr);
   } else {
     UNIMPLEMENTED();
   }

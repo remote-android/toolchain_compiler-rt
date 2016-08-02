@@ -471,7 +471,7 @@ bool DescribeAddressIfStack(uptr addr, uptr access_size) {
   // previously. That's unfortunate, but I have no better solution,
   // especially given that the alloca may be from entirely different place
   // (e.g. use-after-scope, or different thread's stack).
-#if defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#if SANITIZER_PPC64V1
   // On PowerPC64 ELFv1, the address of a function actually points to a
   // three-doubleword data structure with the first field containing
   // the address of the function's code.
@@ -736,10 +736,10 @@ class ScopedInErrorReport {
 };
 
 StaticSpinMutex ScopedInErrorReport::lock_;
-u32 ScopedInErrorReport::reporting_thread_tid_;
+u32 ScopedInErrorReport::reporting_thread_tid_ = kInvalidTid;
 
 void ReportStackOverflow(const SignalContext &sig) {
-  ScopedInErrorReport in_report;
+  ScopedInErrorReport in_report(/*report*/ nullptr, /*fatal*/ true);
   Decorator d;
   Printf("%s", d.Warning());
   Report(
@@ -815,7 +815,7 @@ void ReportDoubleFree(uptr addr, BufferedStackTrace *free_stack) {
   ReportErrorSummary("double-free", &stack);
 }
 
-void ReportNewDeleteSizeMismatch(uptr addr, uptr delete_size,
+void ReportNewDeleteSizeMismatch(uptr addr, uptr alloc_size, uptr delete_size,
                                  BufferedStackTrace *free_stack) {
   ScopedInErrorReport in_report;
   Decorator d;
@@ -829,7 +829,7 @@ void ReportNewDeleteSizeMismatch(uptr addr, uptr delete_size,
   Printf("%s  object passed to delete has wrong type:\n", d.EndWarning());
   Printf("  size of the allocated type:   %zd bytes;\n"
          "  size of the deallocated type: %zd bytes.\n",
-         asan_mz_size(reinterpret_cast<void*>(addr)), delete_size);
+         alloc_size, delete_size);
   CHECK_GT(free_stack->size, 0);
   ScarinessScore::PrintSimple(10, "new-delete-type-mismatch");
   GET_STACK_TRACE_FATAL(free_stack->trace[0], free_stack->top_frame_bp);
@@ -1012,10 +1012,10 @@ static INLINE void CheckForInvalidPointerPair(void *p1, void *p2) {
   uptr a2 = reinterpret_cast<uptr>(p2);
   AsanChunkView chunk1 = FindHeapChunkByAddress(a1);
   AsanChunkView chunk2 = FindHeapChunkByAddress(a2);
-  bool valid1 = chunk1.IsValid();
-  bool valid2 = chunk2.IsValid();
-  if ((valid1 != valid2) || (valid1 && valid2 && !chunk1.Eq(chunk2))) {
-    GET_CALLER_PC_BP_SP;                                              \
+  bool valid1 = chunk1.IsAllocated();
+  bool valid2 = chunk2.IsAllocated();
+  if (!valid1 || !valid2 || !chunk1.Eq(chunk2)) {
+    GET_CALLER_PC_BP_SP;
     return ReportInvalidPointerPair(pc, bp, sp, a1, a2);
   }
 }

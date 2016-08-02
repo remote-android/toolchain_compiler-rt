@@ -223,7 +223,7 @@ void AllocatorOptions::CopyTo(Flags *f, CommonFlags *cf) {
 
 struct Allocator {
   static const uptr kMaxAllowedMallocSize =
-      FIRST_32_SECOND_64(3UL << 30, 1UL << 40);
+      FIRST_32_SECOND_64(3UL << 30, 1ULL << 40);
   static const uptr kMaxThreadLocalQuarantine =
       FIRST_32_SECOND_64(1 << 18, 1 << 20);
 
@@ -479,14 +479,6 @@ struct Allocator {
   void QuarantineChunk(AsanChunk *m, void *ptr, BufferedStackTrace *stack,
                        AllocType alloc_type) {
     CHECK_EQ(m->chunk_state, CHUNK_QUARANTINE);
-
-    if (m->alloc_type != alloc_type) {
-      if (atomic_load(&alloc_dealloc_mismatch, memory_order_acquire)) {
-        ReportAllocTypeMismatch((uptr)ptr, stack, (AllocType)m->alloc_type,
-                                (AllocType)alloc_type);
-      }
-    }
-
     CHECK_GE(m->alloc_tid, 0);
     if (SANITIZER_WORDSIZE == 64)  // On 32-bits this resides in user area.
       CHECK_EQ(m->free_tid, kInvalidTid);
@@ -523,14 +515,24 @@ struct Allocator {
 
     uptr chunk_beg = p - kChunkHeaderSize;
     AsanChunk *m = reinterpret_cast<AsanChunk *>(chunk_beg);
-    if (delete_size && flags()->new_delete_type_mismatch &&
-        delete_size != m->UsedSize()) {
-      ReportNewDeleteSizeMismatch(p, delete_size, stack);
-    }
+
     ASAN_FREE_HOOK(ptr);
     // Must mark the chunk as quarantined before any changes to its metadata.
     // Do not quarantine given chunk if we failed to set CHUNK_QUARANTINE flag.
     if (!AtomicallySetQuarantineFlagIfAllocated(m, ptr, stack)) return;
+
+    if (m->alloc_type != alloc_type) {
+      if (atomic_load(&alloc_dealloc_mismatch, memory_order_acquire)) {
+        ReportAllocTypeMismatch((uptr)ptr, stack, (AllocType)m->alloc_type,
+                                (AllocType)alloc_type);
+      }
+    }
+
+    if (delete_size && flags()->new_delete_type_mismatch &&
+        delete_size != m->UsedSize()) {
+      ReportNewDeleteSizeMismatch(p, m->UsedSize(), delete_size, stack);
+    }
+
     QuarantineChunk(m, ptr, stack, alloc_type);
   }
 
@@ -663,6 +665,9 @@ static AsanAllocator &get_allocator() {
 bool AsanChunkView::IsValid() {
   return chunk_ && chunk_->chunk_state != CHUNK_AVAILABLE;
 }
+bool AsanChunkView::IsAllocated() {
+  return chunk_ && chunk_->chunk_state == CHUNK_ALLOCATED;
+}
 uptr AsanChunkView::Beg() { return chunk_->Beg(); }
 uptr AsanChunkView::End() { return Beg() + UsedSize(); }
 uptr AsanChunkView::UsedSize() { return chunk_->UsedSize(); }
@@ -676,12 +681,15 @@ static StackTrace GetStackTraceFromId(u32 id) {
   return res;
 }
 
+u32 AsanChunkView::GetAllocStackId() { return chunk_->alloc_context_id; }
+u32 AsanChunkView::GetFreeStackId() { return chunk_->free_context_id; }
+
 StackTrace AsanChunkView::GetAllocStack() {
-  return GetStackTraceFromId(chunk_->alloc_context_id);
+  return GetStackTraceFromId(GetAllocStackId());
 }
 
 StackTrace AsanChunkView::GetFreeStack() {
-  return GetStackTraceFromId(chunk_->free_context_id);
+  return GetStackTraceFromId(GetFreeStackId());
 }
 
 void InitializeAllocator(const AllocatorOptions &options) {

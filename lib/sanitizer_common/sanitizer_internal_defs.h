@@ -106,7 +106,12 @@ typedef u64  OFF64_T;
 #if (SANITIZER_WORDSIZE == 64) || SANITIZER_MAC
 typedef uptr operator_new_size_type;
 #else
+# if defined(__s390__) && !defined(__s390x__)
+// Special case: 31-bit s390 has unsigned long as size_t.
+typedef unsigned long operator_new_size_type;
+# else
 typedef u32 operator_new_size_type;
+# endif
 #endif
 
 
@@ -133,7 +138,7 @@ typedef u32 operator_new_size_type;
 # define THREADLOCAL   __declspec(thread)
 # define LIKELY(x) (x)
 # define UNLIKELY(x) (x)
-# define PREFETCH(x) /* _mm_prefetch(x, _MM_HINT_NTA) */
+# define PREFETCH(x) /* _mm_prefetch(x, _MM_HINT_NTA) */ (void)0
 #else  // _MSC_VER
 # define ALWAYS_INLINE inline __attribute__((always_inline))
 # define ALIAS(x) __attribute__((alias(x)))
