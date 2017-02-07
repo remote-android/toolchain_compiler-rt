@@ -40,13 +40,13 @@
 #endif
 
 #define COMPILER_RT_MAX_HOSTLEN 128
-#ifdef _MSC_VER
-#define COMPILER_RT_GETHOSTNAME(Name, Len) gethostname(Name, Len)
-#elif defined(__ORBIS__)
+#ifdef __ORBIS__
 #define COMPILER_RT_GETHOSTNAME(Name, Len) ((void)(Name), (void)(Len), (-1))
 #else
 #define COMPILER_RT_GETHOSTNAME(Name, Len) lprofGetHostName(Name, Len)
+#ifndef _MSC_VER
 #define COMPILER_RT_HAS_UNAME 1
+#endif
 #endif
 
 #if COMPILER_RT_HAS_ATOMICS == 1
@@ -83,6 +83,20 @@
 #define COMPILER_RT_PTR_FETCH_ADD(DomType, PtrVar, PtrIncr)                    \
   (DomType *)lprofPtrFetchAdd((void **)&PtrVar, sizeof(DomType) * PtrIncr)
 #endif
+
+#if defined(_WIN32)
+#define DIR_SEPARATOR '\\'
+#define DIR_SEPARATOR_2 '/'
+#else
+#define DIR_SEPARATOR '/'
+#endif
+
+#ifndef DIR_SEPARATOR_2
+#define IS_DIR_SEPARATOR(ch) ((ch) == DIR_SEPARATOR)
+#else /* DIR_SEPARATOR_2 */
+#define IS_DIR_SEPARATOR(ch)                                                   \
+  (((ch) == DIR_SEPARATOR) || ((ch) == DIR_SEPARATOR_2))
+#endif /* DIR_SEPARATOR_2 */
 
 #define PROF_ERR(Format, ...)                                                  \
   fprintf(stderr, "LLVM Profile Error: " Format, __VA_ARGS__);

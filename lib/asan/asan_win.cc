@@ -27,6 +27,7 @@
 #include "asan_mapping.h"
 #include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_mutex.h"
+#include "sanitizer_common/sanitizer_win_defs.h"
 
 using namespace __asan;  // NOLINT
 
@@ -37,43 +38,39 @@ int __asan_should_detect_stack_use_after_return() {
   return __asan_option_detect_stack_use_after_return;
 }
 
-// -------------------- A workaround for the abscence of weak symbols ----- {{{
-// We don't have a direct equivalent of weak symbols when using MSVC, but we can
-// use the /alternatename directive to tell the linker to default a specific
-// symbol to a specific value, which works nicely for allocator hooks and
-// __asan_default_options().
-void __sanitizer_default_malloc_hook(void *ptr, uptr size) { }
-void __sanitizer_default_free_hook(void *ptr) { }
-const char* __asan_default_default_options() { return ""; }
-const char* __asan_default_default_suppressions() { return ""; }
-void __asan_default_on_error() {}
-// 64-bit msvc will not prepend an underscore for symbols.
-#ifdef _WIN64
-#pragma comment(linker, "/alternatename:__sanitizer_malloc_hook=__sanitizer_default_malloc_hook")  // NOLINT
-#pragma comment(linker, "/alternatename:__sanitizer_free_hook=__sanitizer_default_free_hook")      // NOLINT
-#pragma comment(linker, "/alternatename:__asan_default_options=__asan_default_default_options")    // NOLINT
-#pragma comment(linker, "/alternatename:__asan_default_suppressions=__asan_default_default_suppressions")    // NOLINT
-#pragma comment(linker, "/alternatename:__asan_on_error=__asan_default_on_error")                  // NOLINT
-#else
-#pragma comment(linker, "/alternatename:___sanitizer_malloc_hook=___sanitizer_default_malloc_hook")  // NOLINT
-#pragma comment(linker, "/alternatename:___sanitizer_free_hook=___sanitizer_default_free_hook")      // NOLINT
-#pragma comment(linker, "/alternatename:___asan_default_options=___asan_default_default_options")    // NOLINT
-#pragma comment(linker, "/alternatename:___asan_default_suppressions=___asan_default_default_suppressions")    // NOLINT
-#pragma comment(linker, "/alternatename:___asan_on_error=___asan_default_on_error")                  // NOLINT
-#endif
-// }}}
+SANITIZER_INTERFACE_ATTRIBUTE
+uptr __asan_get_shadow_memory_dynamic_address() {
+  __asan_init();
+  return __asan_shadow_memory_dynamic_address;
+}
 }  // extern "C"
 
-// ---------------------- Windows-specific inteceptors ---------------- {{{
+// ---------------------- Windows-specific interceptors ---------------- {{{
+INTERCEPTOR_WINAPI(void, RtlRaiseException, EXCEPTION_RECORD *ExceptionRecord) {
+  CHECK(REAL(RtlRaiseException));
+  // This is a noreturn function, unless it's one of the exceptions raised to
+  // communicate with the debugger, such as the one from OutputDebugString.
+  if (ExceptionRecord->ExceptionCode != DBG_PRINTEXCEPTION_C)
+    __asan_handle_no_return();
+  REAL(RtlRaiseException)(ExceptionRecord);
+}
+
 INTERCEPTOR_WINAPI(void, RaiseException, void *a, void *b, void *c, void *d) {
   CHECK(REAL(RaiseException));
   __asan_handle_no_return();
   REAL(RaiseException)(a, b, c, d);
 }
 
-// TODO(wwchrome): Win64 has no _except_handler3/4.
-// Need to implement _C_specific_handler instead.
-#ifndef _WIN64
+#ifdef _WIN64
+
+INTERCEPTOR_WINAPI(int, __C_specific_handler, void *a, void *b, void *c, void *d) {  // NOLINT
+  CHECK(REAL(__C_specific_handler));
+  __asan_handle_no_return();
+  return REAL(__C_specific_handler)(a, b, c, d);
+}
+
+#else
+
 INTERCEPTOR(int, _except_handler3, void *a, void *b, void *c, void *d) {
   CHECK(REAL(_except_handler3));
   __asan_handle_no_return();
@@ -115,56 +112,29 @@ INTERCEPTOR_WINAPI(DWORD, CreateThread,
                             asan_thread_start, t, thr_flags, tid);
 }
 
-namespace {
-BlockingMutex mu_for_thread_tracking(LINKER_INITIALIZED);
-
-void EnsureWorkerThreadRegistered() {
-  // FIXME: GetCurrentThread relies on TSD, which might not play well with
-  // system thread pools.  We might want to use something like reference
-  // counting to zero out GetCurrentThread() underlying storage when the last
-  // work item finishes?  Or can we disable reclaiming of threads in the pool?
-  BlockingMutexLock l(&mu_for_thread_tracking);
-  if (__asan::GetCurrentThread())
-    return;
-
-  AsanThread *t = AsanThread::Create(
-      /* start_routine */ nullptr, /* arg */ nullptr,
-      /* parent_tid */ -1, /* stack */ nullptr, /* detached */ true);
-  t->Init();
-  asanThreadRegistry().StartThread(t->tid(), 0, 0);
-  SetCurrentThread(t);
-}
-}  // namespace
-
-INTERCEPTOR_WINAPI(DWORD, NtWaitForWorkViaWorkerFactory, DWORD a, DWORD b) {
-  // NtWaitForWorkViaWorkerFactory is called from system worker pool threads to
-  // query work scheduled by BindIoCompletionCallback, QueueUserWorkItem, etc.
-  // System worker pool threads are created at arbitraty point in time and
-  // without using CreateThread, so we wrap NtWaitForWorkViaWorkerFactory
-  // instead and don't register a specific parent_tid/stack.
-  EnsureWorkerThreadRegistered();
-  return REAL(NtWaitForWorkViaWorkerFactory)(a, b);
-}
-
 // }}}
 
 namespace __asan {
 
 void InitializePlatformInterceptors() {
   ASAN_INTERCEPT_FUNC(CreateThread);
-  ASAN_INTERCEPT_FUNC(RaiseException);
 
-// TODO(wwchrome): Win64 uses _C_specific_handler instead.
-#ifndef _WIN64
+#ifdef _WIN64
+  ASAN_INTERCEPT_FUNC(__C_specific_handler);
+#else
   ASAN_INTERCEPT_FUNC(_except_handler3);
   ASAN_INTERCEPT_FUNC(_except_handler4);
 #endif
 
-  // NtWaitForWorkViaWorkerFactory is always linked dynamically.
-  CHECK(::__interception::OverrideFunction(
-      "NtWaitForWorkViaWorkerFactory",
-      (uptr)WRAP(NtWaitForWorkViaWorkerFactory),
-      (uptr *)&REAL(NtWaitForWorkViaWorkerFactory)));
+  // Try to intercept kernel32!RaiseException, and if that fails, intercept
+  // ntdll!RtlRaiseException instead.
+  if (!::__interception::OverrideFunction("RaiseException",
+                                          (uptr)WRAP(RaiseException),
+                                          (uptr *)&REAL(RaiseException))) {
+    CHECK(::__interception::OverrideFunction("RtlRaiseException",
+                                             (uptr)WRAP(RtlRaiseException),
+                                             (uptr *)&REAL(RtlRaiseException)));
+  }
 }
 
 void AsanApplyToGlobals(globals_op_fptr op, const void *needle) {
@@ -220,8 +190,7 @@ void AsanOnDeadlySignal(int, void *siginfo, void *context) {
 // Exception handler for dealing with shadow memory.
 static LONG CALLBACK
 ShadowExceptionHandler(PEXCEPTION_POINTERS exception_pointers) {
-  static uptr page_size = GetPageSizeCached();
-  static uptr alloc_granularity = GetMmapGranularity();
+  uptr page_size = GetPageSizeCached();
   // Only handle access violations.
   if (exception_pointers->ExceptionRecord->ExceptionCode !=
       EXCEPTION_ACCESS_VIOLATION) {
@@ -267,22 +236,57 @@ void InitializePlatformExceptionHandlers() {
 
 static LPTOP_LEVEL_EXCEPTION_FILTER default_seh_handler;
 
-static long WINAPI SEHHandler(EXCEPTION_POINTERS *info) {
+// Check based on flags if we should report this exception.
+static bool ShouldReportDeadlyException(unsigned code) {
+  switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_IN_PAGE_ERROR:
+      return common_flags()->handle_segv;
+    case EXCEPTION_BREAKPOINT:
+    case EXCEPTION_ILLEGAL_INSTRUCTION: {
+      return common_flags()->handle_sigill;
+    }
+  }
+  return false;
+}
+
+// Return the textual name for this exception.
+const char *DescribeSignalOrException(int signo) {
+  unsigned code = signo;
+  // Get the string description of the exception if this is a known deadly
+  // exception.
+  switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+      return "access-violation";
+    case EXCEPTION_IN_PAGE_ERROR:
+      return "in-page-error";
+    case EXCEPTION_BREAKPOINT:
+      return "breakpoint";
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+      return "illegal-instruction";
+  }
+  return nullptr;
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+long __asan_unhandled_exception_filter(EXCEPTION_POINTERS *info) {
   EXCEPTION_RECORD *exception_record = info->ExceptionRecord;
   CONTEXT *context = info->ContextRecord;
 
-  if (exception_record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
-      exception_record->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) {
-    const char *description =
-        (exception_record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION)
-            ? "access-violation"
-            : "in-page-error";
-    SignalContext sig = SignalContext::Create(exception_record, context);
-    ReportDeadlySignal(description, sig);
-  }
-
+  // Continue the search if the signal wasn't deadly.
+  if (!ShouldReportDeadlyException(exception_record->ExceptionCode))
+    return EXCEPTION_CONTINUE_SEARCH;
   // FIXME: Handle EXCEPTION_STACK_OVERFLOW here.
 
+  SignalContext sig = SignalContext::Create(exception_record, context);
+  ReportDeadlySignal(exception_record->ExceptionCode, sig);
+  UNREACHABLE("returned from reporting deadly signal");
+}
+
+static long WINAPI SEHHandler(EXCEPTION_POINTERS *info) {
+  __asan_unhandled_exception_filter(info);
+
+  // Bubble out to the default exception filter.
   return default_seh_handler(info);
 }
 
@@ -322,10 +326,25 @@ int __asan_set_seh_filter() {
 // immediately after the CRT runs. This way, our exception filter is called
 // first and we can delegate to their filter if appropriate.
 #pragma section(".CRT$XCAB", long, read)  // NOLINT
-__declspec(allocate(".CRT$XCAB"))
-    int (*__intercept_seh)() = __asan_set_seh_filter;
+__declspec(allocate(".CRT$XCAB")) int (*__intercept_seh)() =
+    __asan_set_seh_filter;
+
+// Piggyback on the TLS initialization callback directory to initialize asan as
+// early as possible. Initializers in .CRT$XL* are called directly by ntdll,
+// which run before the CRT. Users also add code to .CRT$XLC, so it's important
+// to run our initializers first.
+static void NTAPI asan_thread_init(void *module, DWORD reason, void *reserved) {
+  if (reason == DLL_PROCESS_ATTACH) __asan_init();
+}
+
+#pragma section(".CRT$XLAB", long, read)  // NOLINT
+__declspec(allocate(".CRT$XLAB")) void (NTAPI *__asan_tls_init)(void *,
+    unsigned long, void *) = asan_thread_init;
 #endif
+
+WIN_FORCE_LINK(__asan_dso_reg_hook)
+
 // }}}
 }  // namespace __asan
 
-#endif  // _WIN32
+#endif  // SANITIZER_WINDOWS

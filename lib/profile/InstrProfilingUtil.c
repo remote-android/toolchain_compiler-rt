@@ -26,6 +26,7 @@
 #include <sys/utsname.h>
 #endif
 
+#include <stdlib.h>
 #include <string.h>
 
 COMPILER_RT_VISIBILITY
@@ -34,7 +35,7 @@ void __llvm_profile_recursive_mkdir(char *path) {
 
   for (i = 1; path[i] != '\0'; ++i) {
     char save = path[i];
-    if (!(path[i] == '/' || path[i] == '\\'))
+    if (!IS_DIR_SEPARATOR(path[i]))
       continue;
     path[i] = '\0';
 #ifdef _WIN32
@@ -65,7 +66,19 @@ void *lprofPtrFetchAdd(void **Mem, long ByteIncr) {
 
 #endif
 
-#ifdef COMPILER_RT_HAS_UNAME
+#ifdef _MSC_VER
+COMPILER_RT_VISIBILITY int lprofGetHostName(char *Name, int Len) {
+  WCHAR Buffer[COMPILER_RT_MAX_HOSTLEN];
+  DWORD BufferSize = sizeof(Buffer);
+  BOOL Result =
+      GetComputerNameExW(ComputerNameDnsFullyQualified, Buffer, &BufferSize);
+  if (!Result)
+    return -1;
+  if (WideCharToMultiByte(CP_UTF8, 0, Buffer, -1, Name, Len, NULL, NULL) == 0)
+    return -1;
+  return 0;
+}
+#elif defined(COMPILER_RT_HAS_UNAME)
 COMPILER_RT_VISIBILITY int lprofGetHostName(char *Name, int Len) {
   struct utsname N;
   int R;
@@ -131,4 +144,78 @@ COMPILER_RT_VISIBILITY FILE *lprofOpenFileEx(const char *ProfileName) {
 #endif
 
   return f;
+}
+
+COMPILER_RT_VISIBILITY const char *lprofGetPathPrefix(int *PrefixStrip,
+                                                      size_t *PrefixLen) {
+  const char *Prefix = getenv("GCOV_PREFIX");
+  const char *PrefixStripStr = getenv("GCOV_PREFIX_STRIP");
+
+  *PrefixLen = 0;
+  *PrefixStrip = 0;
+  if (Prefix == NULL || Prefix[0] == '\0')
+    return NULL;
+
+  if (PrefixStripStr) {
+    *PrefixStrip = atoi(PrefixStripStr);
+
+    /* Negative GCOV_PREFIX_STRIP values are ignored */
+    if (*PrefixStrip < 0)
+      *PrefixStrip = 0;
+  } else {
+    *PrefixStrip = 0;
+  }
+  *PrefixLen = strlen(Prefix);
+
+  return Prefix;
+}
+
+COMPILER_RT_VISIBILITY void
+lprofApplyPathPrefix(char *Dest, const char *PathStr, const char *Prefix,
+                     size_t PrefixLen, int PrefixStrip) {
+
+  const char *Ptr;
+  int Level;
+  const char *StrippedPathStr = PathStr;
+
+  for (Level = 0, Ptr = PathStr + 1; Level < PrefixStrip; ++Ptr) {
+    if (*Ptr == '\0')
+      break;
+
+    if (!IS_DIR_SEPARATOR(*Ptr))
+      continue;
+
+    StrippedPathStr = Ptr;
+    ++Level;
+  }
+
+  memcpy(Dest, Prefix, PrefixLen);
+
+  if (!IS_DIR_SEPARATOR(Prefix[PrefixLen - 1]))
+    Dest[PrefixLen++] = DIR_SEPARATOR;
+
+  memcpy(Dest + PrefixLen, StrippedPathStr, strlen(StrippedPathStr) + 1);
+}
+
+COMPILER_RT_VISIBILITY const char *
+lprofFindFirstDirSeparator(const char *Path) {
+  const char *Sep;
+  Sep = strchr(Path, DIR_SEPARATOR);
+  if (Sep)
+    return Sep;
+#if defined(DIR_SEPARATOR_2)
+  Sep = strchr(Path, DIR_SEPARATOR_2);
+#endif
+  return Sep;
+}
+
+COMPILER_RT_VISIBILITY const char *lprofFindLastDirSeparator(const char *Path) {
+  const char *Sep;
+  Sep = strrchr(Path, DIR_SEPARATOR);
+  if (Sep)
+    return Sep;
+#if defined(DIR_SEPARATOR_2)
+  Sep = strrchr(Path, DIR_SEPARATOR_2);
+#endif
+  return Sep;
 }

@@ -47,6 +47,8 @@
 #include "sanitizer_symbolizer.h"
 #include "sanitizer_flags.h"
 
+using namespace __sanitizer;
+
 static const u64 kMagic64 = 0xC0BFFFFFFFFFFF64ULL;
 static const u64 kMagic32 = 0xC0BFFFFFFFFFFF32ULL;
 static const uptr kNumWordsForMagic = SANITIZER_WORDSIZE == 64 ? 1 : 2;
@@ -110,7 +112,6 @@ class CoverageData {
 
   uptr *data();
   uptr size() const;
-  uptr *buffer() const { return pc_buffer; }
 
  private:
   struct NamedPcRange {
@@ -125,9 +126,8 @@ class CoverageData {
 
   // Maximal size pc array may ever grow.
   // We MmapNoReserve this space to ensure that the array is contiguous.
-  static const uptr kPcArrayMaxSize = FIRST_32_SECOND_64(
-      1 << (SANITIZER_ANDROID ? 24 : (SANITIZER_WINDOWS ? 27 : 26)),
-      1 << 27);
+  static const uptr kPcArrayMaxSize =
+      FIRST_32_SECOND_64(1 << (SANITIZER_ANDROID ? 24 : 26), 1 << 27);
   // The amount file mapping for the pc array is grown by.
   static const uptr kPcArrayMmapSize = 64 * 1024;
 
@@ -142,8 +142,6 @@ class CoverageData {
   uptr pc_array_mapped_size;
   // Descriptor of the file mapped pc array.
   fd_t pc_fd;
-
-  uptr *pc_buffer;
 
   // Vector of coverage guard arrays, protected by mu.
   InternalMmapVectorNoCtor<s32*> guard_array_vec;
@@ -216,11 +214,6 @@ void CoverageData::Enable() {
     atomic_store(&pc_array_size, kPcArrayMaxSize, memory_order_relaxed);
   }
 
-  pc_buffer = nullptr;
-  if (common_flags()->coverage_pc_buffer)
-    pc_buffer = reinterpret_cast<uptr *>(MmapNoReserveOrDie(
-        sizeof(uptr) * kPcArrayMaxSize, "CovInit::pc_buffer"));
-
   cc_array = reinterpret_cast<uptr **>(MmapNoReserveOrDie(
       sizeof(uptr *) * kCcArrayMaxSize, "CovInit::cc_array"));
   atomic_store(&cc_array_size, kCcArrayMaxSize, memory_order_relaxed);
@@ -257,10 +250,6 @@ void CoverageData::Disable() {
   if (cc_array) {
     UnmapOrDie(cc_array, sizeof(uptr *) * kCcArrayMaxSize);
     cc_array = nullptr;
-  }
-  if (pc_buffer) {
-    UnmapOrDie(pc_buffer, sizeof(uptr) * kPcArrayMaxSize);
-    pc_buffer = nullptr;
   }
   if (tr_event_array) {
     UnmapOrDie(tr_event_array,
@@ -426,11 +415,9 @@ void CoverageData::Add(uptr pc, u32 *guard) {
   uptr idx = -guard_value - 1;
   if (idx >= atomic_load(&pc_array_index, memory_order_acquire))
     return;  // May happen after fork when pc_array_index becomes 0.
-  CHECK_LT(idx * sizeof(uptr),
-           atomic_load(&pc_array_size, memory_order_acquire));
+  CHECK_LT(idx, atomic_load(&pc_array_size, memory_order_acquire));
   uptr counter = atomic_fetch_add(&coverage_counter, 1, memory_order_relaxed);
   pc_array[idx] = BundlePcAndCounter(pc, counter);
-  if (pc_buffer) pc_buffer[counter] = pc;
 }
 
 // Registers a pair caller=>callee.
@@ -952,7 +939,8 @@ SANITIZER_INTERFACE_ATTRIBUTE void __sanitizer_cov_with_check(u32 *guard) {
   atomic_uint32_t *atomic_guard = reinterpret_cast<atomic_uint32_t*>(guard);
   if (static_cast<s32>(
           __sanitizer::atomic_load(atomic_guard, memory_order_relaxed)) < 0)
-    __sanitizer_cov(guard);
+  coverage_data.Add(StackTrace::GetPreviousInstructionPc(GET_CALLER_PC()),
+                    guard);
 }
 SANITIZER_INTERFACE_ATTRIBUTE void
 __sanitizer_cov_indir_call16(uptr callee, uptr callee_cache16[]) {
@@ -966,6 +954,7 @@ SANITIZER_INTERFACE_ATTRIBUTE void __sanitizer_cov_init() {
 }
 SANITIZER_INTERFACE_ATTRIBUTE void __sanitizer_cov_dump() {
   coverage_data.DumpAll();
+  __sanitizer_dump_trace_pc_guard_coverage();
 }
 SANITIZER_INTERFACE_ATTRIBUTE void
 __sanitizer_cov_module_init(s32 *guards, uptr npcs, u8 *counters,
@@ -1019,12 +1008,6 @@ uptr __sanitizer_get_coverage_guards(uptr **data) {
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
-uptr __sanitizer_get_coverage_pc_buffer(uptr **data) {
-  *data = coverage_data.buffer();
-  return __sanitizer_get_total_unique_coverage();
-}
-
-SANITIZER_INTERFACE_ATTRIBUTE
 uptr __sanitizer_get_number_of_counters() {
   return coverage_data.GetNumberOf8bitCounters();
 }
@@ -1033,9 +1016,16 @@ SANITIZER_INTERFACE_ATTRIBUTE
 uptr __sanitizer_update_counter_bitset_and_clear_counters(u8 *bitset) {
   return coverage_data.Update8bitCounterBitsetAndClearCounters(bitset);
 }
+
 // Default empty implementations (weak). Users should redefine them.
-SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
-void __sanitizer_cov_trace_cmp() {}
-SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
-void __sanitizer_cov_trace_switch() {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_cmp, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_cmp1, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_cmp2, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_cmp4, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_cmp8, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_switch, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_div4, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_div8, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_gep, void) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_pc_indir, void) {}
 } // extern "C"

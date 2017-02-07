@@ -168,7 +168,9 @@
 // For such platforms build this code with -DSANITIZER_CAN_USE_ALLOCATOR64=0 or
 // change the definition of SANITIZER_CAN_USE_ALLOCATOR64 here.
 #ifndef SANITIZER_CAN_USE_ALLOCATOR64
-# if defined(__mips64) || defined(__aarch64__)
+# if SANITIZER_ANDROID && defined(__aarch64__)
+#  define SANITIZER_CAN_USE_ALLOCATOR64 1
+# elif defined(__mips64) || defined(__aarch64__)
 #  define SANITIZER_CAN_USE_ALLOCATOR64 0
 # else
 #  define SANITIZER_CAN_USE_ALLOCATOR64 (SANITIZER_WORDSIZE == 64)
@@ -180,6 +182,8 @@
 // will still work but will consume more memory for TwoLevelByteMap.
 #if defined(__mips__)
 # define SANITIZER_MMAP_RANGE_SIZE FIRST_32_SECOND_64(1ULL << 32, 1ULL << 40)
+#elif defined(__aarch64__)
+# define SANITIZER_MMAP_RANGE_SIZE FIRST_32_SECOND_64(1ULL << 32, 1ULL << 48)
 #else
 # define SANITIZER_MMAP_RANGE_SIZE FIRST_32_SECOND_64(1ULL << 32, 1ULL << 47)
 #endif
@@ -243,6 +247,10 @@
 // correct one to dlvsym when intercepting them.
 #if SANITIZER_LINUX && (SANITIZER_S390 || SANITIZER_PPC32 || SANITIZER_PPC64V1)
 #define SANITIZER_NLDBL_VERSION "GLIBC_2.4"
+#endif
+
+#if SANITIZER_GO == 0
+# define SANITIZER_GO 0
 #endif
 
 #endif // SANITIZER_PLATFORM_H
