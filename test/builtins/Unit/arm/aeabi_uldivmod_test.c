@@ -1,3 +1,5 @@
+// REQUIRES-ANY: arm-target-arch,armv6m-target-arch
+// RUN: %clang_builtins %s %librt -o %t && %run %t
 //===-- aeabi_uldivmod_test.c - Test aeabi_uldivmod -----------------------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -14,6 +16,7 @@
 #include "int_lib.h"
 #include <stdio.h>
 
+#if __arm__
 // Based on udivmoddi4_test.c
 
 COMPILER_RT_ABI void /* __value_in_regs */ __aeabi_uldivmod(du_int a, du_int b);
@@ -33,6 +36,7 @@ int test_aeabi_uldivmod(du_int a, du_int b, du_int expected_q, du_int expected_r
         "movs %R[r], r3\n"
         : [q] "=r" (q), [r] "=r"(r)
         : [a] "r"(a), [b] "r"(b)
+        : "lr", "r0", "r1", "r2", "r3"
         );
     if (q != expected_q || r != expected_r)
         printf("error in aeabi_uldivmod: %llX / %llX = %llX, R = %llX, expected %llX, %llX\n",
@@ -20637,14 +20641,19 @@ du_int tests[][4] =
 {0xFFFFFFFFFFFFFFFFuLL, 0xFFFFFFFFFFFFFFFEuLL, 0x0000000000000001uLL, 0x0000000000000001uLL},
 {0xFFFFFFFFFFFFFFFFuLL, 0xFFFFFFFFFFFFFFFFuLL, 0x0000000000000001uLL, 0x0000000000000000uLL}
 };
+#endif
 
 int main()
 {
+#if __arm__
     const unsigned N = sizeof(tests) / sizeof(tests[0]);
     unsigned i;
     for (i = 0; i < N; ++i)
         if (test_aeabi_uldivmod(tests[i][0], tests[i][1], tests[i][2], tests[i][3]))
             return 1;
+#else
+    printf("skipped\n");
+#endif
 
     return 0;
 }

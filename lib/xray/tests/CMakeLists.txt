@@ -42,14 +42,14 @@ macro(add_xray_unittest testname)
         list(APPEND TEST_DEPS gtest_main xray)
       endif()
       if(NOT APPLE)
-        add_compiler_rt_test(XRayUnitTests ${testname}
+        add_compiler_rt_test(XRayUnitTests ${testname}-${arch}
           OBJECTS ${TEST_OBJECTS}
           DEPS ${TEST_DEPS}
           LINK_FLAGS ${TARGET_LINK_FLAGS}
           -lstdc++ -lm ${CMAKE_THREAD_LIBS_INIT}
           -lpthread
           -L${COMPILER_RT_LIBRARY_OUTPUT_DIR} -lclang_rt.xray-${arch}
-          -latomic -ldl -lrt)
+          -ldl -lrt)
       endif()
       # FIXME: Figure out how to run even just the unit tests on APPLE.
     endforeach()
