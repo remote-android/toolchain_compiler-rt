@@ -890,6 +890,9 @@ class SocketAddr {
   virtual ~SocketAddr() = default;
   virtual struct sockaddr *ptr() = 0;
   virtual size_t size() const = 0;
+
+  template <class... Args>
+  static std::unique_ptr<SocketAddr> Create(int family, Args... args);
 };
 
 class SocketAddr4 : public SocketAddr {
@@ -928,6 +931,13 @@ class SocketAddr6 : public SocketAddr {
   sockaddr_in6 sai_;
 };
 
+template <class... Args>
+std::unique_ptr<SocketAddr> SocketAddr::Create(int family, Args... args) {
+  if (family == AF_INET)
+    return std::unique_ptr<SocketAddr>(new SocketAddr4(args...));
+  return std::unique_ptr<SocketAddr>(new SocketAddr6(args...));
+}
+
 class MemorySanitizerIpTest : public ::testing::TestWithParam<int> {
  public:
   void SetUp() override {
@@ -936,9 +946,7 @@ class MemorySanitizerIpTest : public ::testing::TestWithParam<int> {
 
   template <class... Args>
   std::unique_ptr<SocketAddr> CreateSockAddr(Args... args) const {
-    if (GetParam() == AF_INET)
-      return std::unique_ptr<SocketAddr>(new SocketAddr4(args...));
-    return std::unique_ptr<SocketAddr>(new SocketAddr6(args...));
+    return SocketAddr::Create(GetParam(), args...);
   }
 
   int CreateSocket(int socket_type) const {
@@ -949,10 +957,11 @@ class MemorySanitizerIpTest : public ::testing::TestWithParam<int> {
 std::vector<int> GetAvailableIpSocketFamilies() {
   std::vector<int> result;
 
-  for (int i : std::vector<int>(AF_INET, AF_INET6)) {
+  for (int i : {AF_INET, AF_INET6}) {
     int s = socket(i, SOCK_STREAM, 0);
     if (s > 0) {
-      result.push_back(i);
+      auto sai = SocketAddr::Create(i, 0);
+      if (bind(s, sai->ptr(), sai->size()) == 0) result.push_back(i);
       close(s);
     }
   }
@@ -1572,11 +1581,19 @@ TEST(MemorySanitizer, strdup) {
 TEST(MemorySanitizer, strndup) {
   char buf[4] = "abc";
   __msan_poison(buf + 2, sizeof(*buf));
-  char *x = strndup(buf, 3);
+  char *x;
+  EXPECT_UMR(x = strndup(buf, 3));
   EXPECT_NOT_POISONED(x[0]);
   EXPECT_NOT_POISONED(x[1]);
   EXPECT_POISONED(x[2]);
   EXPECT_NOT_POISONED(x[3]);
+  free(x);
+  // Check handling of non 0 terminated strings.
+  buf[3] = 'z';
+  __msan_poison(buf + 3, sizeof(*buf));
+  EXPECT_UMR(x = strndup(buf + 3, 1));
+  EXPECT_POISONED(x[0]);
+  EXPECT_NOT_POISONED(x[1]);
   free(x);
 }
 
@@ -1584,7 +1601,8 @@ TEST(MemorySanitizer, strndup_short) {
   char buf[4] = "abc";
   __msan_poison(buf + 1, sizeof(*buf));
   __msan_poison(buf + 2, sizeof(*buf));
-  char *x = strndup(buf, 2);
+  char *x;
+  EXPECT_UMR(x = strndup(buf, 2));
   EXPECT_NOT_POISONED(x[0]);
   EXPECT_POISONED(x[1]);
   EXPECT_NOT_POISONED(x[2]);
@@ -2194,10 +2212,51 @@ TEST(MemorySanitizer, localtime_r) {
   EXPECT_NE(0U, strlen(time.tm_zone));
 }
 
+#if !defined(__FreeBSD__)
+/* Creates a temporary file with contents similar to /etc/fstab to be used
+   with getmntent{_r}.  */
+class TempFstabFile {
+ public:
+   TempFstabFile() : fd (-1) { }
+   ~TempFstabFile() {
+     if (fd >= 0)
+       close (fd);
+   }
+
+   bool Create(void) {
+     snprintf(tmpfile, sizeof(tmpfile), "/tmp/msan.getmntent.tmp.XXXXXX");
+
+     fd = mkstemp(tmpfile);
+     if (fd == -1)
+       return false;
+
+     const char entry[] = "/dev/root / ext4 errors=remount-ro 0 1";
+     size_t entrylen = sizeof(entry);
+
+     size_t bytesWritten = write(fd, entry, entrylen);
+     if (entrylen != bytesWritten)
+       return false;
+
+     return true;
+   }
+
+   const char* FileName(void) {
+     return tmpfile;
+   }
+
+ private:
+  char tmpfile[128];
+  int fd;
+};
+#endif
+
 // There's no getmntent() on FreeBSD.
 #if !defined(__FreeBSD__)
 TEST(MemorySanitizer, getmntent) {
-  FILE *fp = setmntent("/etc/fstab", "r");
+  TempFstabFile fstabtmp;
+  ASSERT_TRUE(fstabtmp.Create());
+  FILE *fp = setmntent(fstabtmp.FileName(), "r");
+
   struct mntent *mnt = getmntent(fp);
   ASSERT_TRUE(mnt != NULL);
   ASSERT_NE(0U, strlen(mnt->mnt_fsname));
@@ -2213,7 +2272,10 @@ TEST(MemorySanitizer, getmntent) {
 // There's no getmntent_r() on FreeBSD.
 #if !defined(__FreeBSD__)
 TEST(MemorySanitizer, getmntent_r) {
-  FILE *fp = setmntent("/etc/fstab", "r");
+  TempFstabFile fstabtmp;
+  ASSERT_TRUE(fstabtmp.Create());
+  FILE *fp = setmntent(fstabtmp.FileName(), "r");
+
   struct mntent mntbuf;
   char buf[1000];
   struct mntent *mnt = getmntent_r(fp, &mntbuf, buf, sizeof(buf));
@@ -3669,8 +3731,10 @@ TEST(MemorySanitizer, ICmpRelational) {
 
   EXPECT_POISONED(poisoned(6, 0xF) > poisoned(7, 0));
   EXPECT_POISONED(poisoned(0xF, 0xF) > poisoned(7, 0));
-
-  EXPECT_NOT_POISONED(poisoned(-1, 0x80000000U) >= poisoned(-1, 0U));
+  // Note that "icmp op X, Y" is approximated with "or shadow(X), shadow(Y)"
+  // and therefore may generate false positives in some cases, e.g. the
+  // following one:
+  // EXPECT_NOT_POISONED(poisoned(-1, 0x80000000U) >= poisoned(-1, 0U));
 }
 
 #if MSAN_HAS_M128

@@ -80,7 +80,7 @@ uptr internal_getpid() {
 
 // In contrast to POSIX, on Windows GetCurrentThreadId()
 // returns a system-unique identifier.
-uptr GetTid() {
+tid_t GetTid() {
   return GetCurrentThreadId();
 }
 
@@ -129,6 +129,16 @@ void UnmapOrDie(void *addr, uptr size) {
       CHECK("unable to unmap" && 0);
     }
   }
+}
+
+void *MmapOrDieOnFatalError(uptr size, const char *mem_type) {
+  void *rv = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  if (rv == 0) {
+    error_t last_error = GetLastError();
+    if (last_error != ERROR_NOT_ENOUGH_MEMORY)
+      ReportMmapFailureAndDie(size, mem_type, "allocate", last_error);
+  }
+  return rv;
 }
 
 // We want to map a chunk of address space aligned to 'alignment'.
@@ -400,9 +410,6 @@ void ReExec() {
 }
 
 void PrepareForSandboxing(__sanitizer_sandbox_arguments *args) {
-#if !SANITIZER_GO
-  CovPrepareForSandboxing(args);
-#endif
 }
 
 bool StackSizeIsUnlimited() {
@@ -553,7 +560,8 @@ void ListOfModules::init() {
     LoadedModule cur_module;
     cur_module.set(module_name, adjusted_base);
     // We add the whole module as one single address range.
-    cur_module.addAddressRange(base_address, end_address, /*executable*/ true);
+    cur_module.addAddressRange(base_address, end_address, /*executable*/ true,
+                               /*writable*/ true);
     modules_.push_back(cur_module);
   }
   UnmapOrDie(hmodules, modules_buffer_size);
@@ -831,9 +839,9 @@ void InstallDeadlySignalHandlers(SignalHandlerType handler) {
   // FIXME: Decide what to do on Windows.
 }
 
-bool IsHandledDeadlySignal(int signum) {
+HandleSignalMode GetHandleSignalMode(int signum) {
   // FIXME: Decide what to do on Windows.
-  return false;
+  return kHandleSignalNo;
 }
 
 // Check based on flags if we should handle this exception.

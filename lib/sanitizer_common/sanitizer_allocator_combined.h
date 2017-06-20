@@ -42,13 +42,12 @@ class CombinedAllocator {
     InitCommon(may_return_null, release_to_os_interval_ms);
   }
 
-  void *Allocate(AllocatorCache *cache, uptr size, uptr alignment,
-                 bool cleared = false, bool check_rss_limit = false) {
+  void *Allocate(AllocatorCache *cache, uptr size, uptr alignment) {
     // Returning 0 on malloc(0) may break a lot of code.
     if (size == 0)
       size = 1;
-    if (size + alignment < size) return ReturnNullOrDieOnBadRequest();
-    if (check_rss_limit && RssLimitIsExceeded()) return ReturnNullOrDieOnOOM();
+    if (size + alignment < size)
+      return ReturnNullOrDieOnBadRequest();
     uptr original_size = size;
     // If alignment requirements are to be fulfilled by the frontend allocator
     // rather than by the primary or secondary, passing an alignment lower than
@@ -70,11 +69,6 @@ class CombinedAllocator {
       res = secondary_.Allocate(&stats_, original_size, alignment);
     if (alignment > 8)
       CHECK_EQ(reinterpret_cast<uptr>(res) & (alignment - 1), 0);
-    // When serviced by the secondary, the chunk comes from a mmap allocation
-    // and will be zero'd out anyway. We only need to clear our the chunk if
-    // it was serviced by the primary, hence using the rounded up 'size'.
-    if (cleared && res && from_primary)
-      internal_bzero_aligned16(res, RoundUpTo(size, 16));
     return res;
   }
 
@@ -89,7 +83,8 @@ class CombinedAllocator {
   }
 
   void *ReturnNullOrDieOnOOM() {
-    if (MayReturnNull()) return nullptr;
+    if (MayReturnNull())
+      return nullptr;
     ReportAllocatorCannotReturnNull(true);
   }
 
@@ -104,15 +99,6 @@ class CombinedAllocator {
 
   void SetReleaseToOSIntervalMs(s32 release_to_os_interval_ms) {
     primary_.SetReleaseToOSIntervalMs(release_to_os_interval_ms);
-  }
-
-  bool RssLimitIsExceeded() {
-    return atomic_load(&rss_limit_is_exceeded_, memory_order_acquire);
-  }
-
-  void SetRssLimitIsExceeded(bool rss_limit_is_exceeded) {
-    atomic_store(&rss_limit_is_exceeded_, rss_limit_is_exceeded,
-                 memory_order_release);
   }
 
   void Deallocate(AllocatorCache *cache, void *p) {
@@ -228,6 +214,5 @@ class CombinedAllocator {
   SecondaryAllocator secondary_;
   AllocatorGlobalStats stats_;
   atomic_uint8_t may_return_null_;
-  atomic_uint8_t rss_limit_is_exceeded_;
 };
 
