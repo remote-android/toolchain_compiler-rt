@@ -155,18 +155,8 @@ else()
       OBJECT_LIBS RTSanitizerCommon
               RTSanitizerCommonLibc
               RTUbsan
-      CFLAGS ${UBSAN_CFLAGS}
-      LINK_LIBS ${UBSAN_DYNAMIC_LIBS}
-      PARENT_TARGET ubsan)
-
-    add_compiler_rt_runtime(clang_rt.ubsan_standalone_cxx
-      SHARED
-      ARCHS ${UBSAN_SUPPORTED_ARCH}
-      OBJECT_LIBS RTSanitizerCommon
-              RTSanitizerCommonLibc
-              RTUbsan
               RTUbsan_cxx
-      CFLAGS ${UBSAN_CXXFLAGS}
+      CFLAGS ${UBSAN_CFLAGS}
       LINK_LIBS ${UBSAN_DYNAMIC_LIBS}
       PARENT_TARGET ubsan)
 
