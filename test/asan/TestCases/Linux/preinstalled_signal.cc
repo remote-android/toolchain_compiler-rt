@@ -4,13 +4,11 @@
 // RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=2 not %run %t 2>&1 | FileCheck %s
 
 // RUN: %clangxx -std=c++11 -DTEST_INSTALL_SIG_HANDLER %s -o %t
-// RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=0 not %run %t 2>&1 | FileCheck %s --check-prefix=CHECK-HANDLER
-// RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=1 not %run %t 2>&1 | FileCheck %s
+// RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=1 not %run %t 2>&1 | FileCheck --check-prefix=CHECK-HANDLER %s
 // RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=2 not %run %t 2>&1 | FileCheck %s
 
 // RUN: %clangxx -std=c++11 -DTEST_INSTALL_SIG_ACTION %s -o %t
-// RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=0 not %run %t 2>&1 | FileCheck %s --check-prefix=CHECK-ACTION
-// RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=1 not %run %t 2>&1 | FileCheck %s
+// RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=1 not %run %t 2>&1 | FileCheck --check-prefix=CHECK-ACTION %s
 // RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=2 not %run %t 2>&1 | FileCheck %s
 
 // REQUIRES: asan-dynamic-runtime
@@ -53,22 +51,22 @@ int InternalSigaction(int sig, KernelSigaction *act, KernelSigaction *oact) {
   return syscall(__NR_rt_sigaction, sig, act, oact, NSIG / 8);
 }
 
-struct KernelSigaction pre_asan = {};
+struct KernelSigaction sigact = {};
 
 static void Init() {
-  int res = InternalSigaction(SIGSEGV, nullptr, &pre_asan);
+  int res = InternalSigaction(SIGSEGV, nullptr, &sigact);
   assert(res >= 0);
-  assert(pre_asan.handler == SIG_DFL || pre_asan.handler == SIG_IGN);
+  assert(sigact.handler == SIG_DFL || sigact.handler == SIG_IGN);
 #if defined(TEST_INSTALL_SIG_HANDLER)
-  pre_asan = {};
-  pre_asan.handler = &SigHandler;
-  res = InternalSigaction(SIGSEGV, &pre_asan, nullptr);
+  sigact = {};
+  sigact.handler = &SigHandler;
+  res = InternalSigaction(SIGSEGV, &sigact, nullptr);
   assert(res >= 0);
 #elif defined(TEST_INSTALL_SIG_ACTION)
-  pre_asan = {};
-  pre_asan.flags = SA_SIGINFO | SA_NODEFER;
-  pre_asan.handler = (__sighandler_t)&SigAction;
-  res = InternalSigaction(SIGSEGV, &pre_asan, nullptr);
+  sigact = {};
+  sigact.flags = SA_SIGINFO | SA_NODEFER;
+  sigact.handler = (__sighandler_t)&SigAction;
+  res = InternalSigaction(SIGSEGV, &sigact, nullptr);
   assert(res >= 0);
 #endif
 }
@@ -76,21 +74,21 @@ static void Init() {
 __attribute__((section(".preinit_array"), used))
 void (*__local_test_preinit)(void) = Init;
 
-bool ExpectUserHandler() {
+bool ShouldAsanInstallHandlers() {
 #if defined(TEST_INSTALL_SIG_HANDLER) || defined(TEST_INSTALL_SIG_ACTION)
-  return !strcmp(getenv("ASAN_OPTIONS"), "handle_segv=0");
+  return !strcmp(getenv("ASAN_OPTIONS"), "handle_segv=2");
 #endif
-  return false;
+  return true;
 }
 
 int main(int argc, char *argv[]) {
-  KernelSigaction post_asan = {};
-  InternalSigaction(SIGSEGV, nullptr, &post_asan);
+  KernelSigaction sigact_asan = {};
+  InternalSigaction(SIGSEGV, nullptr, &sigact_asan);
 
-  assert(post_asan.handler != SIG_DFL);
-  assert(post_asan.handler != SIG_IGN);
-  assert(ExpectUserHandler() ==
-         (post_asan.handler == pre_asan.handler));
+  assert(sigact_asan.handler != SIG_DFL);
+  assert(sigact_asan.handler != SIG_IGN);
+  assert(ShouldAsanInstallHandlers() ==
+         (sigact_asan.handler != sigact.handler));
 
   raise(SIGSEGV);
   printf("%s\n", handler);
