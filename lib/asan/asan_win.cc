@@ -57,8 +57,8 @@ long __asan_unhandled_exception_filter(EXCEPTION_POINTERS *info) {
 
   // FIXME: Handle EXCEPTION_STACK_OVERFLOW here.
 
-  SignalContext sig = SignalContext::Create(exception_record, context);
-  ReportDeadlySignal(exception_record->ExceptionCode, sig);
+  SignalContext sig(exception_record, context);
+  ReportDeadlySignal(sig);
   UNREACHABLE("returned from reporting deadly signal");
 }
 
@@ -215,6 +215,18 @@ void *AsanDoesNotSupportStaticLinkage() {
 #error Please build the runtime with a non-debug CRT: /MD or /MT
 #endif
   return 0;
+}
+
+uptr FindDynamicShadowStart() {
+  uptr granularity = GetMmapGranularity();
+  uptr alignment = 8 * granularity;
+  uptr left_padding = granularity;
+  uptr space_size = kHighShadowEnd + left_padding;
+  uptr shadow_start =
+      FindAvailableMemoryRange(space_size, alignment, granularity, nullptr);
+  CHECK_NE((uptr)0, shadow_start);
+  CHECK(IsAligned(shadow_start, alignment));
+  return shadow_start;
 }
 
 void AsanCheckDynamicRTPrereqs() {}

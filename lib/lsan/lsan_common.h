@@ -127,7 +127,7 @@ struct RootRegion {
 
 InternalMmapVector<RootRegion> const *GetRootRegions();
 void ScanRootRegion(Frontier *frontier, RootRegion const &region,
-                    uptr region_begin, uptr region_end, uptr prot);
+                    uptr region_begin, uptr region_end, bool is_readable);
 // Run stoptheworld while holding any platform-specific locks.
 void DoStopTheWorld(StopTheWorldCallback callback, void* argument);
 
@@ -143,8 +143,10 @@ enum IgnoreObjectResult {
 };
 
 // Functions called from the parent tool.
+const char *MaybeCallLsanDefaultOptions();
 void InitCommonLsan();
 void DoLeakCheck();
+void DoRecoverableLeakCheckVoid();
 void DisableCounterUnderflow();
 bool DisabledInThisThread();
 
@@ -226,6 +228,12 @@ IgnoreObjectResult IgnoreObjectLocked(const void *p);
 // Return the linker module, if valid for the platform.
 LoadedModule *GetLinker();
 
+// Return true if LSan has finished leak checking and reported leaks.
+bool HasReportedLeaks();
+
+// Run platform-specific leak handlers.
+void HandleLeaks();
+
 // Wrapper for chunk metadata operations.
 class LsanMetadata {
  public:
@@ -243,6 +251,9 @@ class LsanMetadata {
 }  // namespace __lsan
 
 extern "C" {
+SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
+const char *__lsan_default_options();
+
 SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
 int __lsan_is_turned_off();
 

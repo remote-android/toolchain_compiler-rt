@@ -60,7 +60,8 @@ extern int __xray_remove_handler();
 /// start logging their subsequent affected function calls (if patched).
 ///
 /// Returns 1 on success, 0 on error.
-extern int __xray_set_handler_arg1(void (*)(int32_t, XRayEntryType, uint64_t));
+extern int __xray_set_handler_arg1(void (*entry)(int32_t, XRayEntryType,
+                                                 uint64_t));
 
 /// Disables the XRay handler used to log first arguments of function calls.
 /// Returns 1 on success, 0 on error.
@@ -104,6 +105,14 @@ extern uintptr_t __xray_function_address(int32_t FuncId);
 /// This function returns the maximum valid function id. Returns 0 if we
 /// encounter errors (when there are no instrumented functions, etc.).
 extern size_t __xray_max_function_id();
+
+/// Initialize the required XRay data structures. This is useful in cases where
+/// users want to control precisely when the XRay instrumentation data
+/// structures are initialized, for example when the XRay library is built with
+/// the XRAY_NO_PREINIT preprocessor definition.
+///
+/// Calling __xray_init() more than once is safe across multiple threads.
+extern void __xray_init();
 
 } // end extern "C"
 

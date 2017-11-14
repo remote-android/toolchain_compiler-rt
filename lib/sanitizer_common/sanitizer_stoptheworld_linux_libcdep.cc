@@ -246,7 +246,7 @@ static void TracerThreadDieCallback() {
 
 // Signal handler to wake up suspended threads when the tracer thread dies.
 static void TracerThreadSignalHandler(int signum, void *siginfo, void *uctx) {
-  SignalContext ctx = SignalContext::Create(siginfo, uctx);
+  SignalContext ctx(siginfo, uctx);
   Printf("Tracer caught signal %d: addr=0x%zx pc=0x%zx sp=0x%zx\n", signum,
          ctx.addr, ctx.pc, ctx.sp);
   ThreadSuspender *inst = thread_suspender_instance;
@@ -263,7 +263,7 @@ static void TracerThreadSignalHandler(int signum, void *siginfo, void *uctx) {
 }
 
 // Size of alternative stack for signal handlers in the tracer thread.
-static const int kHandlerStackSize = 4096;
+static const int kHandlerStackSize = 8192;
 
 // This function will be run as a cloned task.
 static int TracerThread(void* argument) {
@@ -287,7 +287,7 @@ static int TracerThread(void* argument) {
 
   // Alternate stack for signal handling.
   InternalScopedBuffer<char> handler_stack_memory(kHandlerStackSize);
-  struct sigaltstack handler_stack;
+  stack_t handler_stack;
   internal_memset(&handler_stack, 0, sizeof(handler_stack));
   handler_stack.ss_sp = handler_stack_memory.data();
   handler_stack.ss_size = kHandlerStackSize;

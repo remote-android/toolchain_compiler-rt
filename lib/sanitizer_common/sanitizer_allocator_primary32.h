@@ -24,7 +24,8 @@ template<class SizeClassAllocator> struct SizeClassAllocator32LocalCache;
 // be returned by MmapOrDie().
 //
 // Region:
-//   a result of a single call to MmapAlignedOrDie(kRegionSize, kRegionSize).
+//   a result of a single call to MmapAlignedOrDieOnFatalError(kRegionSize,
+//                                                             kRegionSize).
 // Since the regions are aligned by kRegionSize, there are exactly
 // kNumPossibleRegions possible regions in the address space and so we keep
 // a ByteMap possible_regions to store the size classes of each Region.
@@ -40,6 +41,7 @@ template<class SizeClassAllocator> struct SizeClassAllocator32LocalCache;
 struct SizeClassAllocator32FlagMasks {  //  Bit masks.
   enum {
     kRandomShuffleChunks = 1,
+    kUseSeparateSizeClassForBatch = 2,
   };
 };
 
@@ -54,8 +56,10 @@ class SizeClassAllocator32 {
   typedef typename Params::ByteMap ByteMap;
   typedef typename Params::MapUnmapCallback MapUnmapCallback;
 
-  static const bool kRandomShuffleChunks =
-      Params::kFlags & SizeClassAllocator32FlagMasks::kRandomShuffleChunks;
+  static const bool kRandomShuffleChunks = Params::kFlags &
+      SizeClassAllocator32FlagMasks::kRandomShuffleChunks;
+  static const bool kUseSeparateSizeClassForBatch = Params::kFlags &
+      SizeClassAllocator32FlagMasks::kUseSeparateSizeClassForBatch;
 
   struct TransferBatch {
     static const uptr kMaxNumCached = SizeClassMap::kMaxNumCachedHint - 2;
@@ -93,11 +97,11 @@ class SizeClassAllocator32 {
 
   static const uptr kBatchSize = sizeof(TransferBatch);
   COMPILER_CHECK((kBatchSize & (kBatchSize - 1)) == 0);
-  COMPILER_CHECK(sizeof(TransferBatch) ==
-                 SizeClassMap::kMaxNumCachedHint * sizeof(uptr));
+  COMPILER_CHECK(kBatchSize == SizeClassMap::kMaxNumCachedHint * sizeof(uptr));
 
   static uptr ClassIdToSize(uptr class_id) {
-    return SizeClassMap::Size(class_id);
+    return (class_id == SizeClassMap::kBatchClassID) ?
+        kBatchSize : SizeClassMap::Size(class_id);
   }
 
   typedef SizeClassAllocator32<Params> ThisT;
@@ -117,7 +121,6 @@ class SizeClassAllocator32 {
   }
 
   void *MapWithCallback(uptr size) {
-    size = RoundUpTo(size, GetPageSizeCached());
     void *res = MmapOrDie(size, "SizeClassAllocator32");
     MapUnmapCallback().OnMap((uptr)res, size);
     return res;
@@ -149,8 +152,9 @@ class SizeClassAllocator32 {
     CHECK_LT(class_id, kNumClasses);
     SizeClassInfo *sci = GetSizeClassInfo(class_id);
     SpinMutexLock l(&sci->mutex);
-    if (sci->free_list.empty())
-      PopulateFreeList(stat, c, sci, class_id);
+    if (sci->free_list.empty() &&
+        UNLIKELY(!PopulateFreeList(stat, c, sci, class_id)))
+      return nullptr;
     CHECK(!sci->free_list.empty());
     TransferBatch *b = sci->free_list.front();
     sci->free_list.pop_front();
@@ -160,9 +164,9 @@ class SizeClassAllocator32 {
   NOINLINE void DeallocateBatch(AllocatorStats *stat, uptr class_id,
                                 TransferBatch *b) {
     CHECK_LT(class_id, kNumClasses);
+    CHECK_GT(b->Count(), 0);
     SizeClassInfo *sci = GetSizeClassInfo(class_id);
     SpinMutexLock l(&sci->mutex);
-    CHECK_GT(b->Count(), 0);
     sci->free_list.push_front(b);
   }
 
@@ -277,11 +281,13 @@ class SizeClassAllocator32 {
 
   uptr AllocateRegion(AllocatorStats *stat, uptr class_id) {
     CHECK_LT(class_id, kNumClasses);
-    uptr res = reinterpret_cast<uptr>(MmapAlignedOrDie(kRegionSize, kRegionSize,
-                                      "SizeClassAllocator32"));
+    uptr res = reinterpret_cast<uptr>(MmapAlignedOrDieOnFatalError(
+        kRegionSize, kRegionSize, "SizeClassAllocator32"));
+    if (UNLIKELY(!res))
+      return 0;
     MapUnmapCallback().OnMap(res, kRegionSize);
     stat->Add(AllocatorStatMapped, kRegionSize);
-    CHECK_EQ(0U, (res & (kRegionSize - 1)));
+    CHECK(IsAligned(res, kRegionSize));
     possible_regions.set(ComputeRegionId(res), static_cast<u8>(class_id));
     return res;
   }
@@ -291,21 +297,25 @@ class SizeClassAllocator32 {
     return &size_class_info_array[class_id];
   }
 
-  void PopulateFreeList(AllocatorStats *stat, AllocatorCache *c,
+  bool PopulateFreeList(AllocatorStats *stat, AllocatorCache *c,
                         SizeClassInfo *sci, uptr class_id) {
     uptr size = ClassIdToSize(class_id);
     uptr reg = AllocateRegion(stat, class_id);
+    if (UNLIKELY(!reg))
+      return false;
     uptr n_chunks = kRegionSize / (size + kMetadataSize);
     uptr max_count = TransferBatch::MaxCached(class_id);
+    CHECK_GT(max_count, 0);
     TransferBatch *b = nullptr;
     for (uptr i = reg; i < reg + n_chunks * size; i += size) {
       if (!b) {
         b = c->CreateBatch(class_id, this, (TransferBatch*)i);
+        if (UNLIKELY(!b))
+          return false;
         b->Clear();
       }
       b->Add((void*)i);
       if (b->Count() == max_count) {
-        CHECK_GT(b->Count(), 0);
         sci->free_list.push_back(b);
         b = nullptr;
       }
@@ -314,6 +324,7 @@ class SizeClassAllocator32 {
       CHECK_GT(b->Count(), 0);
       sci->free_list.push_back(b);
     }
+    return true;
   }
 
   ByteMap possible_regions;

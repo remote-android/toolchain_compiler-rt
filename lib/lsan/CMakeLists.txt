@@ -13,6 +13,7 @@ set(LSAN_SOURCES
   lsan_allocator.cc
   lsan_linux.cc
   lsan_interceptors.cc
+  lsan_mac.cc
   lsan_malloc_mac.cc
   lsan_preinit.cc
   lsan_thread.cc)
@@ -28,6 +29,8 @@ add_compiler_rt_object_libraries(RTLSanCommon
 if(COMPILER_RT_HAS_LSAN)
   add_compiler_rt_component(lsan)
   if(APPLE)
+    set(LSAN_LINK_LIBS ${SANITIZER_COMMON_LINK_LIBS})
+
     add_weak_symbols("lsan" WEAK_SYMBOL_LINK_FLAGS)
     add_weak_symbols("sanitizer_common" WEAK_SYMBOL_LINK_FLAGS)
 
@@ -41,7 +44,8 @@ if(COMPILER_RT_HAS_LSAN)
                   RTSanitizerCommon
                   RTSanitizerCommonLibc
       CFLAGS ${LSAN_CFLAGS}
-      LINK_FLAGS ${WEAK_SYMBOL_LINK_FLAGS}
+      LINK_FLAGS ${SANITIZER_COMMON_LINK_FLAGS} ${WEAK_SYMBOL_LINK_FLAGS}
+      LINK_LIBS ${LSAN_LINK_LIBS}
       PARENT_TARGET lsan)
   else()
     foreach(arch ${LSAN_SUPPORTED_ARCH})

@@ -74,6 +74,10 @@ static const char kStdSuppressions[] =
   // definition.
   "leak:*pthread_exit*\n"
 #endif  // SANITIZER_SUPPRESS_LEAK_ON_PTHREAD_EXIT
+#if SANITIZER_MAC
+  // For Darwin and os_log/os_trace: https://reviews.llvm.org/D35173
+  "leak:*_os_trace*\n"
+#endif
   // TLS leak in some glibc versions, described in
   // https://sourceware.org/bugzilla/show_bug.cgi?id=12650.
   "leak:*tls_get_addr*\n";
@@ -103,6 +107,10 @@ void InitializeRootRegions() {
   root_regions = new(placeholder) InternalMmapVector<RootRegion>(1);
 }
 
+const char *MaybeCallLsanDefaultOptions() {
+  return (&__lsan_default_options) ? __lsan_default_options() : "";
+}
+
 void InitCommonLsan() {
   InitializeRootRegions();
   if (common_flags()->detect_leaks) {
@@ -118,7 +126,6 @@ class Decorator: public __sanitizer::SanitizerCommonDecorator {
   Decorator() : SanitizerCommonDecorator() { }
   const char *Error() { return Red(); }
   const char *Leak() { return Blue(); }
-  const char *End() { return Default(); }
 };
 
 static inline bool CanBeAHeapPointer(uptr p) {
@@ -301,11 +308,10 @@ static void ProcessThreads(SuspendedThreadsList const &suspended_threads,
 }
 
 void ScanRootRegion(Frontier *frontier, const RootRegion &root_region,
-                    uptr region_begin, uptr region_end, uptr prot) {
+                    uptr region_begin, uptr region_end, bool is_readable) {
   uptr intersection_begin = Max(root_region.begin, region_begin);
   uptr intersection_end = Min(region_end, root_region.begin + root_region.size);
   if (intersection_begin >= intersection_end) return;
-  bool is_readable = prot & MemoryMappingLayout::kProtectionRead;
   LOG_POINTERS("Root region %p-%p intersects with mapped region %p-%p (%s)\n",
                root_region.begin, root_region.begin + root_region.size,
                region_begin, region_end,
@@ -318,11 +324,10 @@ void ScanRootRegion(Frontier *frontier, const RootRegion &root_region,
 static void ProcessRootRegion(Frontier *frontier,
                               const RootRegion &root_region) {
   MemoryMappingLayout proc_maps(/*cache_enabled*/ true);
-  uptr begin, end, prot;
-  while (proc_maps.Next(&begin, &end,
-                        /*offset*/ nullptr, /*filename*/ nullptr,
-                        /*filename_size*/ 0, &prot)) {
-    ScanRootRegion(frontier, root_region, begin, end, prot);
+  MemoryMappedSegment segment;
+  while (proc_maps.Next(&segment)) {
+    ScanRootRegion(frontier, root_region, segment.start, segment.end,
+                   segment.IsReadable());
   }
 }
 
@@ -562,7 +567,7 @@ static bool CheckForLeaks() {
            "\n");
     Printf("%s", d.Error());
     Report("ERROR: LeakSanitizer: detected memory leaks\n");
-    Printf("%s", d.End());
+    Printf("%s", d.Default());
     param.leak_report.ReportTopLeaks(flags()->max_leaks);
   }
   if (common_flags()->print_suppressions)
@@ -574,18 +579,16 @@ static bool CheckForLeaks() {
   return false;
 }
 
+static bool has_reported_leaks = false;
+bool HasReportedLeaks() { return has_reported_leaks; }
+
 void DoLeakCheck() {
   BlockingMutexLock l(&global_mutex);
   static bool already_done;
   if (already_done) return;
   already_done = true;
-  bool have_leaks = CheckForLeaks();
-  if (!have_leaks) {
-    return;
-  }
-  if (common_flags()->exitcode) {
-    Die();
-  }
+  has_reported_leaks = CheckForLeaks();
+  if (has_reported_leaks) HandleLeaks();
 }
 
 static int DoRecoverableLeakCheck() {
@@ -593,6 +596,8 @@ static int DoRecoverableLeakCheck() {
   bool have_leaks = CheckForLeaks();
   return have_leaks ? 1 : 0;
 }
+
+void DoRecoverableLeakCheckVoid() { DoRecoverableLeakCheck(); }
 
 static Suppression *GetSuppressionForAddr(uptr addr) {
   Suppression *s = nullptr;
@@ -698,7 +703,7 @@ void LeakReport::PrintReportForLeak(uptr index) {
   Printf("%s leak of %zu byte(s) in %zu object(s) allocated from:\n",
          leaks_[index].is_directly_leaked ? "Direct" : "Indirect",
          leaks_[index].total_size, leaks_[index].hit_count);
-  Printf("%s", d.End());
+  Printf("%s", d.Default());
 
   PrintStackTraceById(leaks_[index].stack_trace_id);
 
@@ -756,6 +761,7 @@ uptr LeakReport::UnsuppressedLeakCount() {
 namespace __lsan {
 void InitCommonLsan() { }
 void DoLeakCheck() { }
+void DoRecoverableLeakCheckVoid() { }
 void DisableInThisThread() { }
 void EnableInThisThread() { }
 }
@@ -853,6 +859,11 @@ int __lsan_do_recoverable_leak_check() {
 }
 
 #if !SANITIZER_SUPPORTS_WEAK_HOOKS
+SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
+const char * __lsan_default_options() {
+  return "";
+}
+
 SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
 int __lsan_is_turned_off() {
   return 0;

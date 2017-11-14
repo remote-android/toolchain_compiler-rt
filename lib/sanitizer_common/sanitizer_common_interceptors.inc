@@ -40,8 +40,10 @@
 
 #include "interception/interception.h"
 #include "sanitizer_addrhashmap.h"
+#include "sanitizer_errno.h"
 #include "sanitizer_placement_new.h"
 #include "sanitizer_platform_interceptors.h"
+#include "sanitizer_symbolizer.h"
 #include "sanitizer_tls_get_addr.h"
 
 #include <stdarg.h>
@@ -224,16 +226,16 @@ bool PlatformHasDifferentMemcpyAndMemmove();
 #endif
 
 #ifndef COMMON_INTERCEPTOR_STRNDUP_IMPL
-#define COMMON_INTERCEPTOR_STRNDUP_IMPL(ctx, s, size)                          \
-  COMMON_INTERCEPTOR_ENTER(ctx, strndup, s, size);                             \
-  uptr copy_length = internal_strnlen(s, size);                                \
-  char *new_mem = (char *)WRAP(malloc)(copy_length + 1);                       \
-  if (common_flags()->intercept_strndup) {                                     \
-    COMMON_INTERCEPTOR_READ_STRING(ctx, s, Min(size, copy_length + 1));        \
-  }                                                                            \
-  COMMON_INTERCEPTOR_COPY_STRING(ctx, new_mem, s, copy_length);                \
-  internal_memcpy(new_mem, s, copy_length);                                    \
-  new_mem[copy_length] = '\0';                                                 \
+#define COMMON_INTERCEPTOR_STRNDUP_IMPL(ctx, s, size)                         \
+  COMMON_INTERCEPTOR_ENTER(ctx, strndup, s, size);                            \
+  uptr copy_length = internal_strnlen(s, size);                               \
+  char *new_mem = (char *)WRAP(malloc)(copy_length + 1);                      \
+  if (common_flags()->intercept_strndup) {                                    \
+    COMMON_INTERCEPTOR_READ_STRING(ctx, s, Min(size, copy_length + 1));       \
+  }                                                                           \
+  COMMON_INTERCEPTOR_COPY_STRING(ctx, new_mem, s, copy_length);               \
+  internal_memcpy(new_mem, s, copy_length);                                   \
+  new_mem[copy_length] = '\0';                                                \
   return new_mem;
 #endif
 
@@ -257,7 +259,7 @@ typedef AddrHashMap<CommonInterceptorMetadata, 31051> MetadataHashMap;
 
 static MetadataHashMap *interceptor_metadata_map;
 
-#if SI_NOT_WINDOWS
+#if SI_POSIX
 UNUSED static void SetInterceptorMetadata(__sanitizer_FILE *addr,
                                           const FileMetadata &file) {
   MetadataHashMap::Handle h(interceptor_metadata_map, (uptr)addr);
@@ -284,7 +286,7 @@ UNUSED static void DeleteInterceptorMetadata(void *addr) {
   MetadataHashMap::Handle h(interceptor_metadata_map, (uptr)addr, true);
   CHECK(h.exists());
 }
-#endif  // SI_NOT_WINDOWS
+#endif  // SI_POSIX
 
 #if SANITIZER_INTERCEPT_STRLEN
 INTERCEPTOR(SIZE_T, strlen, const char *s) {
@@ -885,7 +887,7 @@ INTERCEPTOR(long double, frexpl, long double x, int *exp) {
 #define INIT_FREXPF_FREXPL
 #endif  // SANITIZER_INTERCEPT_FREXPF_FREXPL
 
-#if SI_NOT_WINDOWS
+#if SI_POSIX
 static void write_iovec(void *ctx, struct __sanitizer_iovec *iovec,
                         SIZE_T iovlen, SIZE_T maxlen) {
   for (SIZE_T i = 0; i < iovlen && maxlen; ++i) {
@@ -3588,7 +3590,7 @@ INTERCEPTOR(int, ppoll, __sanitizer_pollfd *fds, __sanitizer_nfds_t nfds,
   if (fds && nfds) read_pollfd(ctx, fds, nfds);
   if (timeout_ts)
     COMMON_INTERCEPTOR_READ_RANGE(ctx, timeout_ts, struct_timespec_sz);
-  // FIXME: read sigmask when all of sigemptyset, etc are intercepted.
+  if (sigmask) COMMON_INTERCEPTOR_READ_RANGE(ctx, sigmask, sizeof(*sigmask));
   int res =
       COMMON_INTERCEPTOR_BLOCK_REAL(ppoll)(fds, nfds, timeout_ts, sigmask);
   if (fds && nfds) write_pollfd(ctx, fds, nfds);
@@ -3629,7 +3631,7 @@ INTERCEPTOR(int, wordexp, char *s, __sanitizer_wordexp_t *p, int flags) {
 INTERCEPTOR(int, sigwait, __sanitizer_sigset_t *set, int *sig) {
   void *ctx;
   COMMON_INTERCEPTOR_ENTER(ctx, sigwait, set, sig);
-  // FIXME: read sigset_t when all of sigemptyset, etc are intercepted
+  if (set) COMMON_INTERCEPTOR_READ_RANGE(ctx, set, sizeof(*set));
   // FIXME: under ASan the call below may write to freed memory and corrupt
   // its metadata. See
   // https://github.com/google/sanitizers/issues/321.
@@ -3646,7 +3648,7 @@ INTERCEPTOR(int, sigwait, __sanitizer_sigset_t *set, int *sig) {
 INTERCEPTOR(int, sigwaitinfo, __sanitizer_sigset_t *set, void *info) {
   void *ctx;
   COMMON_INTERCEPTOR_ENTER(ctx, sigwaitinfo, set, info);
-  // FIXME: read sigset_t when all of sigemptyset, etc are intercepted
+  if (set) COMMON_INTERCEPTOR_READ_RANGE(ctx, set, sizeof(*set));
   // FIXME: under ASan the call below may write to freed memory and corrupt
   // its metadata. See
   // https://github.com/google/sanitizers/issues/321.
@@ -3665,7 +3667,7 @@ INTERCEPTOR(int, sigtimedwait, __sanitizer_sigset_t *set, void *info,
   void *ctx;
   COMMON_INTERCEPTOR_ENTER(ctx, sigtimedwait, set, info, timeout);
   if (timeout) COMMON_INTERCEPTOR_READ_RANGE(ctx, timeout, struct_timespec_sz);
-  // FIXME: read sigset_t when all of sigemptyset, etc are intercepted
+  if (set) COMMON_INTERCEPTOR_READ_RANGE(ctx, set, sizeof(*set));
   // FIXME: under ASan the call below may write to freed memory and corrupt
   // its metadata. See
   // https://github.com/google/sanitizers/issues/321.
@@ -3728,7 +3730,7 @@ INTERCEPTOR(int, sigprocmask, int how, __sanitizer_sigset_t *set,
             __sanitizer_sigset_t *oldset) {
   void *ctx;
   COMMON_INTERCEPTOR_ENTER(ctx, sigprocmask, how, set, oldset);
-  // FIXME: read sigset_t when all of sigemptyset, etc are intercepted
+  if (set) COMMON_INTERCEPTOR_READ_RANGE(ctx, set, sizeof(*set));
   // FIXME: under ASan the call below may write to freed memory and corrupt
   // its metadata. See
   // https://github.com/google/sanitizers/issues/321.
@@ -5574,6 +5576,7 @@ INTERCEPTOR(void*, dlopen, const char *filename, int flag) {
   if (filename) COMMON_INTERCEPTOR_READ_STRING(ctx, filename, 0);
   COMMON_INTERCEPTOR_ON_DLOPEN(filename, flag);
   void *res = REAL(dlopen)(filename, flag);
+  Symbolizer::GetOrInit()->InvalidateModuleList();
   COMMON_INTERCEPTOR_LIBRARY_LOADED(filename, res);
   return res;
 }
@@ -5582,6 +5585,7 @@ INTERCEPTOR(int, dlclose, void *handle) {
   void *ctx;
   COMMON_INTERCEPTOR_ENTER_NOIGNORE(ctx, dlclose, handle);
   int res = REAL(dlclose)(handle);
+  Symbolizer::GetOrInit()->InvalidateModuleList();
   COMMON_INTERCEPTOR_LIBRARY_UNLOADED();
   return res;
 }
@@ -6199,6 +6203,57 @@ INTERCEPTOR(int, mprobe, void *ptr) {
 }
 #endif
 
+INTERCEPTOR(SIZE_T, wcslen, const wchar_t *s) {
+  void *ctx;
+  COMMON_INTERCEPTOR_ENTER(ctx, wcslen, s);
+  SIZE_T res = REAL(wcslen)(s);
+  COMMON_INTERCEPTOR_READ_RANGE(ctx, s, sizeof(wchar_t) * (res + 1));
+  return res;
+}
+
+INTERCEPTOR(SIZE_T, wcsnlen, const wchar_t *s, SIZE_T n) {
+  void *ctx;
+  COMMON_INTERCEPTOR_ENTER(ctx, wcsnlen, s, n);
+  SIZE_T res = REAL(wcsnlen)(s, n);
+  COMMON_INTERCEPTOR_READ_RANGE(ctx, s, sizeof(wchar_t) * Min(res + 1, n));
+  return res;
+}
+#define INIT_WCSLEN                  \
+  COMMON_INTERCEPT_FUNCTION(wcslen); \
+  COMMON_INTERCEPT_FUNCTION(wcsnlen);
+
+#if SANITIZER_INTERCEPT_WCSCAT
+INTERCEPTOR(wchar_t *, wcscat, wchar_t *dst, const wchar_t *src) {
+  void *ctx;
+  COMMON_INTERCEPTOR_ENTER(ctx, wcscat, dst, src);
+  SIZE_T src_size = REAL(wcslen)(src);
+  SIZE_T dst_size = REAL(wcslen)(dst);
+  COMMON_INTERCEPTOR_READ_RANGE(ctx, src, (src_size + 1) * sizeof(wchar_t));
+  COMMON_INTERCEPTOR_READ_RANGE(ctx, dst, (dst_size + 1) * sizeof(wchar_t));
+  COMMON_INTERCEPTOR_WRITE_RANGE(ctx, dst + dst_size,
+                                 (src_size + 1) * sizeof(wchar_t));
+  return REAL(wcscat)(dst, src);  // NOLINT
+}
+
+INTERCEPTOR(wchar_t *, wcsncat, wchar_t *dst, const wchar_t *src, SIZE_T n) {
+  void *ctx;
+  COMMON_INTERCEPTOR_ENTER(ctx, wcsncat, dst, src, n);
+  SIZE_T src_size = REAL(wcsnlen)(src, n);
+  SIZE_T dst_size = REAL(wcslen)(dst);
+  COMMON_INTERCEPTOR_READ_RANGE(ctx, src,
+                                Min(src_size + 1, n) * sizeof(wchar_t));
+  COMMON_INTERCEPTOR_READ_RANGE(ctx, dst, (dst_size + 1) * sizeof(wchar_t));
+  COMMON_INTERCEPTOR_WRITE_RANGE(ctx, dst + dst_size,
+                                 (src_size + 1) * sizeof(wchar_t));
+  return REAL(wcsncat)(dst, src, n);  // NOLINT
+}
+#define INIT_WCSCAT                  \
+  COMMON_INTERCEPT_FUNCTION(wcscat); \
+  COMMON_INTERCEPT_FUNCTION(wcsncat);
+#else
+#define INIT_WCSCAT
+#endif
+
 static void InitializeCommonInterceptors() {
   static u64 metadata_mem[sizeof(MetadataHashMap) / sizeof(u64) + 1];
   interceptor_metadata_map = new((void *)&metadata_mem) MetadataHashMap();
@@ -6403,4 +6458,6 @@ static void InitializeCommonInterceptors() {
   INIT_UTMP;
   INIT_UTMPX;
   INIT_GETLOADAVG;
+  INIT_WCSLEN;
+  INIT_WCSCAT;
 }

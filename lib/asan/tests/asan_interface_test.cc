@@ -386,23 +386,6 @@ TEST(AddressSanitizerInterface, DISABLED_InvalidPoisonAndUnpoisonCallsTest) {
   free(array);
 }
 
-#if !defined(_WIN32)  // FIXME: This should really be a lit test.
-static void ErrorReportCallbackOneToZ(const char *report) {
-  int report_len = strlen(report);
-  ASSERT_EQ(6, write(2, "ABCDEF", 6));
-  ASSERT_EQ(report_len, write(2, report, report_len));
-  ASSERT_EQ(6, write(2, "ABCDEF", 6));
-  _exit(1);
-}
-
-TEST(AddressSanitizerInterface, SetErrorReportCallbackTest) {
-  __asan_set_error_report_callback(ErrorReportCallbackOneToZ);
-  EXPECT_DEATH(__asan_report_error((void *)GET_CALLER_PC(), 0, 0, 0, true, 1),
-               ASAN_PCRE_DOTALL "ABCDEF.*AddressSanitizer.*WRITE.*ABCDEF");
-  __asan_set_error_report_callback(NULL);
-}
-#endif
-
 TEST(AddressSanitizerInterface, GetOwnershipStressTest) {
   std::vector<char *> pointers;
   std::vector<size_t> sizes;
@@ -423,3 +406,11 @@ TEST(AddressSanitizerInterface, GetOwnershipStressTest) {
     free(pointers[i]);
 }
 
+TEST(AddressSanitizerInterface, HandleNoReturnTest) {
+  char array[40];
+  __asan_poison_memory_region(array, sizeof(array));
+  BAD_ACCESS(array, 20);
+  __asan_handle_no_return();
+  // It unpoisons the whole thread stack.
+  GOOD_ACCESS(array, 20);
+}
