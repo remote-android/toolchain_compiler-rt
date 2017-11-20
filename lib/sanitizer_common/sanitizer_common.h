@@ -74,6 +74,7 @@ INLINE uptr GetPageSizeCached() {
 }
 uptr GetMmapGranularity();
 uptr GetMaxVirtualAddress();
+uptr GetMaxUserVirtualAddress();
 // Threads
 tid_t GetTid();
 uptr GetThreadSelf();

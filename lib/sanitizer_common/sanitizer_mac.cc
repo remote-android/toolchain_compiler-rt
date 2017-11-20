@@ -864,6 +864,10 @@ uptr GetMaxVirtualAddress() {
 #endif  // SANITIZER_WORDSIZE
 }
 
+uptr GetMaxVirtualAddress() {
+  return GetMaxUserVirtualAddress();
+}
+
 uptr FindAvailableMemoryRange(uptr shadow_size,
                               uptr alignment,
                               uptr left_padding,
