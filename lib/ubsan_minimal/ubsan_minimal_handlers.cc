@@ -1,7 +1,5 @@
-#include "sanitizer_common/sanitizer_atomic.h"
-
+#include <atomic>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -10,38 +8,37 @@ static void message(const char *msg) {
 }
 
 static const int kMaxCallerPcs = 20;
-static __sanitizer::atomic_uintptr_t caller_pcs[kMaxCallerPcs];
+static std::atomic<void *> caller_pcs[kMaxCallerPcs];
 // Number of elements in caller_pcs. A special value of kMaxCallerPcs + 1 means
 // that "too many errors" has already been reported.
-static __sanitizer::atomic_uint32_t caller_pcs_sz;
+static std::atomic<int> caller_pcs_sz;
 
-__attribute__((noinline)) static bool report_this_error(void *caller_p) {
-  uintptr_t caller = reinterpret_cast<uintptr_t>(caller_p);
-  if (caller == 0) return false;
+__attribute__((noinline))
+static bool report_this_error(void *caller) {
+  if (caller == nullptr) return false;
   while (true) {
-    unsigned sz = __sanitizer::atomic_load_relaxed(&caller_pcs_sz);
-    if (sz > kMaxCallerPcs) return false;  // early exit
+    int sz = caller_pcs_sz.load(std::memory_order_relaxed);
+    if (sz > kMaxCallerPcs) return false; // early exit
     // when sz==kMaxCallerPcs print "too many errors", but only when cmpxchg
     // succeeds in order to not print it multiple times.
     if (sz > 0 && sz < kMaxCallerPcs) {
-      uintptr_t p;
-      for (unsigned i = 0; i < sz; ++i) {
-        p = __sanitizer::atomic_load_relaxed(&caller_pcs[i]);
-        if (p == 0) break;  // Concurrent update.
+      void *p;
+      for (int i = 0; i < sz; ++i) {
+        p = caller_pcs[i].load(std::memory_order_relaxed);
+        if (p == nullptr) break; // Concurrent update.
         if (p == caller) return false;
       }
-      if (p == 0) continue;  // FIXME: yield?
+      if (p == nullptr) continue; // FIXME: yield?
     }
 
-    if (!__sanitizer::atomic_compare_exchange_strong(
-            &caller_pcs_sz, &sz, sz + 1, __sanitizer::memory_order_seq_cst))
-      continue;  // Concurrent update! Try again from the start.
+    if (!caller_pcs_sz.compare_exchange_strong(sz, sz + 1))
+      continue; // Concurrent update! Try again from the start.
 
     if (sz == kMaxCallerPcs) {
       message("ubsan: too many errors\n");
       return false;
     }
-    __sanitizer::atomic_store_relaxed(&caller_pcs[sz], caller);
+    caller_pcs[sz].store(caller, std::memory_order_relaxed);
     return true;
   }
 }

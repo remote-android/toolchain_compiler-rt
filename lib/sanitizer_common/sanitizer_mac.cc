@@ -849,7 +849,7 @@ uptr GetTaskInfoMaxAddress() {
 }
 #endif
 
-uptr GetMaxUserVirtualAddress() {
+uptr GetMaxVirtualAddress() {
 #if SANITIZER_WORDSIZE == 64
 # if defined(__aarch64__) && SANITIZER_IOS && !SANITIZER_IOSSIM
   // Get the maximum VM address
@@ -862,10 +862,6 @@ uptr GetMaxUserVirtualAddress() {
 #else  // SANITIZER_WORDSIZE == 32
   return (1ULL << 32) - 1;  // 0xffffffff;
 #endif  // SANITIZER_WORDSIZE
-}
-
-uptr GetMaxVirtualAddress() {
-  return GetMaxUserVirtualAddress();
 }
 
 uptr FindAvailableMemoryRange(uptr shadow_size,

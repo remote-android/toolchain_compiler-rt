@@ -280,7 +280,7 @@ void InitShadow() {
   CHECK_EQ(0, GetShadow());
   CHECK_EQ(0, GetShadowSize());
 
-  uptr vma = GetMaxUserVirtualAddress();
+  uptr vma = GetMaxVirtualAddress();
   // Shadow is 2 -> 2**kShadowGranularity.
   SetShadowSize((vma >> (kShadowGranularity - 1)) + 1);
   VReport(1, "CFI: VMA size %zx, shadow size %zx\n", vma, GetShadowSize());

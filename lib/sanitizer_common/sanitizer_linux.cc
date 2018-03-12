@@ -150,8 +150,6 @@ namespace __sanitizer {
 #include "sanitizer_syscall_linux_x86_64.inc"
 #elif SANITIZER_LINUX && defined(__aarch64__)
 #include "sanitizer_syscall_linux_aarch64.inc"
-#elif SANITIZER_LINUX && defined(__arm__)
-#include "sanitizer_syscall_linux_arm.inc"
 #else
 #include "sanitizer_syscall_generic.inc"
 #endif
@@ -993,19 +991,13 @@ uptr GetMaxVirtualAddress() {
 # if defined(__s390__)
   return (1ULL << 31) - 1;  // 0x7fffffff;
 # else
-  return (1ULL << 32) - 1;  // 0xffffffff;
+  uptr res = (1ULL << 32) - 1;  // 0xffffffff;
+  if (!common_flags()->full_address_space)
+    res -= GetKernelAreaSize();
+  CHECK_LT(reinterpret_cast<uptr>(&res), res);
+  return res;
 # endif
 #endif  // SANITIZER_WORDSIZE
-}
-
-uptr GetMaxUserVirtualAddress() {
-  uptr addr = GetMaxVirtualAddress();
-#if SANITIZER_WORDSIZE == 32 && !defined(__s390__)
-  if (!common_flags()->full_address_space)
-    addr -= GetKernelAreaSize();
-  CHECK_LT(reinterpret_cast<uptr>(&addr), addr);
-#endif
-  return addr;
 }
 
 uptr GetPageSize() {

@@ -120,7 +120,7 @@ bool InitShadow(bool init_origins) {
     return false;
   }
 
-  const uptr maxVirtualAddress = GetMaxUserVirtualAddress();
+  const uptr maxVirtualAddress = GetMaxVirtualAddress();
 
   for (unsigned i = 0; i < kMemoryLayoutSize; ++i) {
     uptr start = kMemoryLayout[i].start;

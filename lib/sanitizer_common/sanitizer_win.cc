@@ -64,14 +64,10 @@ uptr GetMmapGranularity() {
   return si.dwAllocationGranularity;
 }
 
-uptr GetMaxUserVirtualAddress() {
+uptr GetMaxVirtualAddress() {
   SYSTEM_INFO si;
   GetSystemInfo(&si);
   return (uptr)si.lpMaximumApplicationAddress;
-}
-
-uptr GetMaxVirtualAddress() {
-  return GetMaxUserVirtualAddress();
 }
 
 bool FileExists(const char *filename) {
