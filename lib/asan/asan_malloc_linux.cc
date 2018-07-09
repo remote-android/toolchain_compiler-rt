@@ -16,8 +16,10 @@
 
 #include "sanitizer_common/sanitizer_platform.h"
 #if SANITIZER_FREEBSD || SANITIZER_FUCHSIA || SANITIZER_LINUX || \
-    SANITIZER_NETBSD || SANITIZER_SOLARIS
+    SANITIZER_NETBSD || SANITIZER_RTEMS || SANITIZER_SOLARIS
 
+#include "sanitizer_common/sanitizer_allocator_checks.h"
+#include "sanitizer_common/sanitizer_errno.h"
 #include "sanitizer_common/sanitizer_tls_get_addr.h"
 #include "asan_allocator.h"
 #include "asan_interceptors.h"
@@ -28,7 +30,7 @@
 using namespace __asan;  // NOLINT
 
 static uptr allocated_for_dlsym;
-static const uptr kDlsymAllocPoolSize = 1024;
+static const uptr kDlsymAllocPoolSize = SANITIZER_RTEMS ? 4096 : 1024;
 static uptr alloc_memory_for_dlsym[kDlsymAllocPoolSize];
 
 static INLINE bool IsInDlsymAllocPool(const void *ptr) {
@@ -44,16 +46,47 @@ static void *AllocateFromLocalPool(uptr size_in_bytes) {
   return mem;
 }
 
+static int PosixMemalignFromLocalPool(void **memptr, uptr alignment,
+                                      uptr size_in_bytes) {
+  if (UNLIKELY(!CheckPosixMemalignAlignment(alignment)))
+    return errno_EINVAL;
+
+  CHECK(alignment >= kWordSize);
+
+  uptr addr = (uptr)&alloc_memory_for_dlsym[allocated_for_dlsym];
+  uptr aligned_addr = RoundUpTo(addr, alignment);
+  uptr aligned_size = RoundUpTo(size_in_bytes, kWordSize);
+
+  uptr *end_mem = (uptr*)(aligned_addr + aligned_size);
+  uptr allocated = end_mem - alloc_memory_for_dlsym;
+  if (allocated >= kDlsymAllocPoolSize)
+    return errno_ENOMEM;
+
+  allocated_for_dlsym = allocated;
+  *memptr = (void*)aligned_addr;
+  return 0;
+}
+
+// On RTEMS, we use the local pool to handle memory allocation before
+// the ASan run-time has been initialized.
+static INLINE bool EarlyMalloc() {
+  return SANITIZER_RTEMS && (!asan_inited || asan_init_is_running);
+}
+
 static INLINE bool MaybeInDlsym() {
   // Fuchsia doesn't use dlsym-based interceptors.
   return !SANITIZER_FUCHSIA && asan_init_is_running;
+}
+
+static INLINE bool UseLocalPool() {
+  return EarlyMalloc() || MaybeInDlsym();
 }
 
 static void *ReallocFromLocalPool(void *ptr, uptr size) {
   const uptr offset = (uptr)ptr - (uptr)alloc_memory_for_dlsym;
   const uptr copy_size = Min(size, kDlsymAllocPoolSize - offset);
   void *new_ptr;
-  if (UNLIKELY(MaybeInDlsym())) {
+  if (UNLIKELY(UseLocalPool())) {
     new_ptr = AllocateFromLocalPool(size);
   } else {
     ENSURE_ASAN_INITED();
@@ -81,7 +114,7 @@ INTERCEPTOR(void, cfree, void *ptr) {
 #endif // SANITIZER_INTERCEPT_CFREE
 
 INTERCEPTOR(void*, malloc, uptr size) {
-  if (UNLIKELY(MaybeInDlsym()))
+  if (UNLIKELY(UseLocalPool()))
     // Hack: dlsym calls malloc before REAL(malloc) is retrieved from dlsym.
     return AllocateFromLocalPool(size);
   ENSURE_ASAN_INITED();
@@ -90,7 +123,7 @@ INTERCEPTOR(void*, malloc, uptr size) {
 }
 
 INTERCEPTOR(void*, calloc, uptr nmemb, uptr size) {
-  if (UNLIKELY(MaybeInDlsym()))
+  if (UNLIKELY(UseLocalPool()))
     // Hack: dlsym calls calloc before REAL(calloc) is retrieved from dlsym.
     return AllocateFromLocalPool(nmemb * size);
   ENSURE_ASAN_INITED();
@@ -101,7 +134,7 @@ INTERCEPTOR(void*, calloc, uptr nmemb, uptr size) {
 INTERCEPTOR(void*, realloc, void *ptr, uptr size) {
   if (UNLIKELY(IsInDlsymAllocPool(ptr)))
     return ReallocFromLocalPool(ptr, size);
-  if (UNLIKELY(MaybeInDlsym()))
+  if (UNLIKELY(UseLocalPool()))
     return AllocateFromLocalPool(size);
   ENSURE_ASAN_INITED();
   GET_STACK_TRACE_MALLOC;
@@ -122,10 +155,12 @@ INTERCEPTOR(void*, __libc_memalign, uptr boundary, uptr size) {
 }
 #endif // SANITIZER_INTERCEPT_MEMALIGN
 
+#if SANITIZER_INTERCEPT_ALIGNED_ALLOC
 INTERCEPTOR(void*, aligned_alloc, uptr boundary, uptr size) {
   GET_STACK_TRACE_MALLOC;
   return asan_memalign(boundary, size, &stack, FROM_MALLOC);
 }
+#endif // SANITIZER_INTERCEPT_ALIGNED_ALLOC
 
 INTERCEPTOR(uptr, malloc_usable_size, void *ptr) {
   GET_CURRENT_PC_BP_SP;
@@ -154,8 +189,9 @@ INTERCEPTOR(int, mallopt, int cmd, int value) {
 #endif // SANITIZER_INTERCEPT_MALLOPT_AND_MALLINFO
 
 INTERCEPTOR(int, posix_memalign, void **memptr, uptr alignment, uptr size) {
+  if (UNLIKELY(UseLocalPool()))
+    return PosixMemalignFromLocalPool(memptr, alignment, size);
   GET_STACK_TRACE_MALLOC;
-  // Printf("posix_memalign: %zx %zu\n", alignment, size);
   return asan_posix_memalign(memptr, alignment, size, &stack);
 }
 
