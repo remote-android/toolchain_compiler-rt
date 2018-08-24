@@ -13,8 +13,10 @@
 #include "gtest/gtest.h"
 
 #include "xray_profile_collector.h"
-#include "xray_profiler_flags.h"
+#include "xray_profiling_flags.h"
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,8 +26,31 @@ namespace {
 
 static constexpr auto kHeaderSize = 16u;
 
+constexpr uptr ExpectedProfilingVersion = 0x20180424;
+
+struct ExpectedProfilingFileHeader {
+  const u64 MagicBytes = 0x7872617970726f66; // Identifier for XRay profiling
+                                             // files 'xrayprof' in hex.
+  const u64 Version = ExpectedProfilingVersion;
+  u64 Timestamp = 0;
+  u64 PID = 0;
+};
+
+void ValidateFileHeaderBlock(XRayBuffer B) {
+  ASSERT_NE(static_cast<const void *>(B.Data), nullptr);
+  ASSERT_EQ(B.Size, sizeof(ExpectedProfilingFileHeader));
+  typename std::aligned_storage<sizeof(ExpectedProfilingFileHeader)>::type
+      FileHeaderStorage;
+  ExpectedProfilingFileHeader ExpectedHeader;
+  std::memcpy(&FileHeaderStorage, B.Data, B.Size);
+  auto &FileHeader =
+      *reinterpret_cast<ExpectedProfilingFileHeader *>(&FileHeaderStorage);
+  ASSERT_EQ(ExpectedHeader.MagicBytes, FileHeader.MagicBytes);
+  ASSERT_EQ(ExpectedHeader.Version, FileHeader.Version);
+}
+
 void ValidateBlock(XRayBuffer B) {
-  profilerFlags()->setDefaults();
+  profilingFlags()->setDefaults();
   ASSERT_NE(static_cast<const void *>(B.Data), nullptr);
   ASSERT_NE(B.Size, 0u);
   ASSERT_GE(B.Size, kHeaderSize);
@@ -84,7 +109,7 @@ std::tuple<Profile, const char *> ParseProfile(const char *P) {
 }
 
 TEST(profileCollectorServiceTest, PostSerializeCollect) {
-  profilerFlags()->setDefaults();
+  profilingFlags()->setDefaults();
   // The most basic use-case (the one we actually only care about) is the one
   // where we ensure that we can post FunctionCallTrie instances, which are then
   // destroyed but serialized properly.
@@ -107,9 +132,13 @@ TEST(profileCollectorServiceTest, PostSerializeCollect) {
   // Then we serialize the data.
   profileCollectorService::serialize();
 
-  // Then we go through a single buffer to see whether we're getting the data we
-  // expect.
+  // Then we go through two buffers to see whether we're getting the data we
+  // expect. The first block must always be as large as a file header, which
+  // will have a fixed size.
   auto B = profileCollectorService::nextBuffer({nullptr, 0});
+  ValidateFileHeaderBlock(B);
+
+  B = profileCollectorService::nextBuffer(B);
   ValidateBlock(B);
   u32 BlockSize;
   u32 BlockNum;
@@ -153,11 +182,11 @@ void threadProcessing() {
   T.exitFunction(2, 3);
   T.exitFunction(1, 4);
 
-  profileCollectorService::post(T, __sanitizer::GetTid());
+  profileCollectorService::post(T, GetTid());
 }
 
 TEST(profileCollectorServiceTest, PostSerializeCollectMultipleThread) {
-  profilerFlags()->setDefaults();
+  profilingFlags()->setDefaults();
   std::thread t1(threadProcessing);
   std::thread t2(threadProcessing);
 
@@ -169,6 +198,9 @@ TEST(profileCollectorServiceTest, PostSerializeCollectMultipleThread) {
 
   // Ensure that we see two buffers.
   auto B = profileCollectorService::nextBuffer({nullptr, 0});
+  ValidateFileHeaderBlock(B);
+
+  B = profileCollectorService::nextBuffer(B);
   ValidateBlock(B);
 
   B = profileCollectorService::nextBuffer(B);

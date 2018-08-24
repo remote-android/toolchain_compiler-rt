@@ -1736,12 +1736,6 @@ TSAN_INTERCEPTOR(void, abort, int fake) {
   REAL(abort)(fake);
 }
 
-TSAN_INTERCEPTOR(int, puts, const char *s) {
-  SCOPED_TSAN_INTERCEPTOR(puts, s);
-  MemoryAccessRange(thr, pc, (uptr)s, internal_strlen(s), false);
-  return REAL(puts)(s);
-}
-
 TSAN_INTERCEPTOR(int, rmdir, char *path) {
   SCOPED_TSAN_INTERCEPTOR(rmdir, path);
   Release(thr, pc, Dir2addr(path));
@@ -2549,22 +2543,22 @@ TSAN_INTERCEPTOR(void, thr_exit, tid_t *state) {
 #define TSAN_MAYBE_INTERCEPT_THR_EXIT
 #endif
 
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_init, void *c, void *a);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_signal, void *c);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_broadcast, void *c);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_wait, void *c, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_destroy, void *c);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, mutex_init, void *m, void *a);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, mutex_destroy, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, mutex_trylock, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_init, void *m, void *a);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_destroy, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_rdlock, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_tryrdlock, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_wrlock, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_trywrlock, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_unlock, void *m);
-TSAN_INTERCEPTOR_NETBSD_ALIAS_THR(int, once, void *o, void (*f)());
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_init, void *c, void *a)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_signal, void *c)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_broadcast, void *c)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_wait, void *c, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, cond_destroy, void *c)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, mutex_init, void *m, void *a)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, mutex_destroy, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, mutex_trylock, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_init, void *m, void *a)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_destroy, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_rdlock, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_tryrdlock, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_wrlock, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_trywrlock, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS(int, rwlock_unlock, void *m)
+TSAN_INTERCEPTOR_NETBSD_ALIAS_THR(int, once, void *o, void (*f)())
 
 namespace __tsan {
 
@@ -2706,10 +2700,7 @@ void InitializeInterceptors() {
   TSAN_INTERCEPT(unlink);
   TSAN_INTERCEPT(tmpfile);
   TSAN_MAYBE_INTERCEPT_TMPFILE64;
-  TSAN_INTERCEPT(fread);
-  TSAN_INTERCEPT(fwrite);
   TSAN_INTERCEPT(abort);
-  TSAN_INTERCEPT(puts);
   TSAN_INTERCEPT(rmdir);
   TSAN_INTERCEPT(closedir);
 

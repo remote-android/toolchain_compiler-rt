@@ -53,7 +53,9 @@
 #include <link.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <sys/mman.h>
+#include <sys/param.h>
 #if !SANITIZER_SOLARIS
 #include <sys/ptrace.h>
 #endif
@@ -66,7 +68,6 @@
 #include <ucontext.h>
 #endif
 #if SANITIZER_OPENBSD
-#include <signal.h>
 #include <sys/futex.h>
 #endif
 #include <unistd.h>
@@ -102,10 +103,6 @@ extern struct ps_strings *__ps_strings;
 #include <stdlib.h>
 #include <thread.h>
 #define environ _environ
-#endif
-
-#if !SANITIZER_ANDROID
-#include <sys/signal.h>
 #endif
 
 extern char **environ;
@@ -153,7 +150,11 @@ extern void internal_sigreturn();
 #if SANITIZER_OPENBSD
 # define SANITIZER_USE_GETENTROPY 1
 #else
-# define SANITIZER_USE_GETENTROPY 0
+# if SANITIZER_FREEBSD && __FreeBSD_version >= 1200000
+#   define SANITIZER_USE_GETENTROPY 1
+# else
+#   define SANITIZER_USE_GETENTROPY 0
+# endif
 #endif // SANITIZER_USE_GETENTROPY
 
 namespace __sanitizer {
@@ -975,7 +976,7 @@ bool ThreadLister::IsAlive(int tid) {
   // proc_task_readdir. See task_state implementation in Linux.
   char path[80];
   internal_snprintf(path, sizeof(path), "/proc/%d/task/%d/status", pid_, tid);
-  if (!ReadFileToBuffer(path, &buffer_) || buffer_.empty())
+  if (!ReadFileToVector(path, &buffer_) || buffer_.empty())
     return false;
   buffer_.push_back(0);
   static const char kPrefix[] = "\nPPid:";
@@ -1243,7 +1244,7 @@ uptr internal_clone(int (*fn)(void *), void *child_stack, int flags, void *arg,
                          "d"(parent_tidptr),
                          "r"(r8),
                          "r"(r10)
-                       : "rsp", "memory", "r11", "rcx");
+                       : "memory", "r11", "rcx");
   return res;
 }
 #elif defined(__mips__)
@@ -1952,6 +1953,30 @@ void SignalContext::InitPcSpBp() { GetPcSpBp(context, &pc, &sp, &bp); }
 
 void MaybeReexec() {
   // No need to re-exec on Linux.
+}
+
+void CheckASLR() {
+#if SANITIZER_NETBSD
+  int mib[3];
+  int paxflags;
+  size_t len = sizeof(paxflags);
+
+  mib[0] = CTL_PROC;
+  mib[1] = internal_getpid();
+  mib[2] = PROC_PID_PAXFLAGS;
+
+  if (UNLIKELY(sysctl(mib, 3, &paxflags, &len, NULL, 0) == -1)) {
+    Printf("sysctl failed\n");
+    Die();
+  }
+
+  if (UNLIKELY(paxflags & CTL_PROC_PAXFLAGS_ASLR)) {
+    Printf("This sanitizer is not compatible with enabled ASLR\n");
+    Die();
+  }
+#else
+  // Do nothing
+#endif
 }
 
 void PrintModuleMap() { }

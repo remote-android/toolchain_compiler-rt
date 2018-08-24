@@ -173,8 +173,8 @@ set(GENERIC_TF_SOURCES
   trunctfsf2.c)
 
 option(COMPILER_RT_EXCLUDE_ATOMIC_BUILTIN
-  "Skip the atomic builtin (this may be needed if system headers are unavailable)"
-  Off)
+  "Skip the atomic builtin (these should normally be provided by a shared library)"
+  On)
 
 if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD)
   set(GENERIC_SOURCES
@@ -406,6 +406,7 @@ if(MINGW)
       arm/aeabi_ldivmod.S
       arm/aeabi_uidivmod.S
       arm/aeabi_uldivmod.S
+      arm/chkstk.S
       divmoddi4.c
       divmodsi4.c
       divdi3.c
@@ -564,6 +565,15 @@ else ()
         set(_arch "arm|armv6m")
       elseif("${arch}" MATCHES "^(armhf|armv7|armv7s|armv7k|armv7m|armv7em)$")
         set(_arch "arm")
+      endif()
+
+      # For ARM archs, exclude any VFP builtins if VFP is not supported
+      if (${arch} MATCHES "^(arm|armhf|armv7|armv7s|armv7k|armv7m|armv7em)$")
+        string(REPLACE ";" " " _TARGET_${arch}_CFLAGS "${TARGET_${arch}_CFLAGS}")
+        check_compile_definition(__VFP_FP__ "${CMAKE_C_FLAGS} ${_TARGET_${arch}_CFLAGS}" COMPILER_RT_HAS_${arch}_VFP)
+        if(NOT COMPILER_RT_HAS_${arch}_VFP)
+          list(REMOVE_ITEM ${arch}_SOURCES ${arm_Thumb1_VFPv2_SOURCES} ${arm_Thumb1_SjLj_EH_SOURCES})
+        endif()
       endif()
 
       # Filter out generic versions of routines that are re-implemented in

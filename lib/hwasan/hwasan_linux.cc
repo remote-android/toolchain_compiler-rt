@@ -20,6 +20,7 @@
 #include "hwasan_dynamic_shadow.h"
 #include "hwasan_interface_internal.h"
 #include "hwasan_mapping.h"
+#include "hwasan_report.h"
 #include "hwasan_thread.h"
 
 #include <elf.h>
@@ -43,8 +44,7 @@ static void ReserveShadowMemoryRange(uptr beg, uptr end, const char *name) {
   CHECK_EQ(((end + 1) % GetMmapGranularity()), 0);
   uptr size = end - beg + 1;
   DecreaseTotalMmap(size);  // Don't count the shadow against mmap_limit_mb.
-  void *res = MmapFixedNoReserve(beg, size, name);
-  if (res != (void *)beg) {
+  if (!MmapFixedNoReserve(beg, size, name)) {
     Report(
         "ReserveShadowMemoryRange failed while trying to map 0x%zx bytes. "
         "Perhaps you're using ulimit -v\n",
