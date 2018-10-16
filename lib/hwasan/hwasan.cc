@@ -57,7 +57,6 @@ Flags *flags() {
 }
 
 int hwasan_inited = 0;
-int hwasan_shadow_inited = 0;
 bool hwasan_init_is_running;
 
 int hwasan_report_count = 0;
@@ -162,22 +161,6 @@ using namespace __hwasan;
 
 uptr __hwasan_shadow_memory_dynamic_address;  // Global interface symbol.
 
-void __hwasan_shadow_init() {
-  if (hwasan_shadow_inited) return;
-  if (!InitShadow()) {
-    Printf("FATAL: HWAddressSanitizer cannot mmap the shadow memory.\n");
-    if (HWASAN_FIXED_MAPPING) {
-      Printf("FATAL: Make sure to compile with -fPIE and to link with -pie.\n");
-      Printf("FATAL: Disabling ASLR is known to cause this error.\n");
-      Printf("FATAL: If running under GDB, try "
-             "'set disable-randomization off'.\n");
-    }
-    DumpProcessMap();
-    Die();
-  }
-  hwasan_shadow_inited = 1;
-}
-
 void __hwasan_init() {
   CHECK(!hwasan_init_is_running);
   if (hwasan_inited) return;
@@ -195,11 +178,17 @@ void __hwasan_init() {
   __sanitizer_set_report_path(common_flags()->log_path);
 
   DisableCoreDumperIfNecessary();
-  __hwasan_shadow_init();
-  MadviseShadow();
-
-  // This may call libc -> needs initialized shadow.
-  AndroidLogInit();
+  if (!InitShadow()) {
+    Printf("FATAL: HWAddressSanitizer cannot mmap the shadow memory.\n");
+    if (HWASAN_FIXED_MAPPING) {
+      Printf("FATAL: Make sure to compile with -fPIE and to link with -pie.\n");
+      Printf("FATAL: Disabling ASLR is known to cause this error.\n");
+      Printf("FATAL: If running under GDB, try "
+             "'set disable-randomization off'.\n");
+    }
+    DumpProcessMap();
+    Die();
+  }
 
   InitializeInterceptors();
   InstallDeadlySignalHandlers(HwasanOnDeadlySignal);
@@ -209,13 +198,13 @@ void __hwasan_init() {
 
   InitializeCoverage(common_flags()->coverage, common_flags()->coverage_dir);
 
-  HwasanTSDInit();
+  HwasanTSDInit(HwasanTSDDtor);
 
   HwasanAllocatorInit();
 
   HwasanThread *main_thread = HwasanThread::Create(nullptr, nullptr);
   SetCurrentThread(main_thread);
-  main_thread->Init();
+  main_thread->ThreadStart();
 
 #if HWASAN_CONTAINS_UBSAN
   __ubsan::InitAsPlugin();
@@ -227,14 +216,9 @@ void __hwasan_init() {
   hwasan_inited = 1;
 }
 
-void __hwasan_print_shadow(const void *p, uptr sz) {
-  uptr ptr_raw = GetAddressFromPointer((uptr)p);
-  uptr shadow_first = MEM_TO_SHADOW(ptr_raw);
-  uptr shadow_last = MEM_TO_SHADOW(ptr_raw + sz - 1);
-  Printf("HWASan shadow map for %zx .. %zx (pointer tag %x)\n", ptr_raw,
-         ptr_raw + sz, GetTagFromPointer((uptr)p));
-  for (uptr s = shadow_first; s <= shadow_last; ++s)
-    Printf("  %zx: %x\n", SHADOW_TO_MEM(s), *(tag_t *)s);
+void __hwasan_print_shadow(const void *x, uptr size) {
+  // FIXME:
+  Printf("FIXME: __hwasan_print_shadow unimplemented\n");
 }
 
 sptr __hwasan_test_shadow(const void *p, uptr sz) {
@@ -406,28 +390,6 @@ void __hwasan_store16_noabort(uptr p) {
 
 void __hwasan_tag_memory(uptr p, u8 tag, uptr sz) {
   TagMemoryAligned(p, sz, tag);
-}
-
-uptr __hwasan_tag_pointer(uptr p, u8 tag) {
-  return AddTagToPointer(p, tag);
-}
-
-void __hwasan_handle_longjmp(const void *sp_dst) {
-  uptr dst = (uptr)sp_dst;
-  // HWASan does not support tagged SP.
-  CHECK(GetTagFromPointer(dst) == 0);
-
-  uptr sp = (uptr)__builtin_frame_address(0);
-  static const uptr kMaxExpectedCleanupSize = 64 << 20;  // 64M
-  if (dst < sp || dst - sp > kMaxExpectedCleanupSize) {
-    Report(
-        "WARNING: HWASan is ignoring requested __hwasan_handle_longjmp: "
-        "stack top: %p; target %p; distance: %p (%zd)\n"
-        "False positive error reports may follow\n",
-        (void *)sp, (void *)dst, dst - sp);
-    return;
-  }
-  TagMemory(sp, dst - sp, 0);
 }
 
 static const u8 kFallbackTag = 0xBB;

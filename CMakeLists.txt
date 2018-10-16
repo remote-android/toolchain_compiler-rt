@@ -39,8 +39,6 @@ option(COMPILER_RT_BUILD_PROFILE "Build profile runtime" ON)
 mark_as_advanced(COMPILER_RT_BUILD_PROFILE)
 option(COMPILER_RT_BUILD_XRAY_NO_PREINIT "Build xray with no preinit patching" OFF)
 mark_as_advanced(COMPILER_RT_BUILD_XRAY_NO_PREINIT)
-option(COMPILER_RT_FUZZER_LINK_LIBCXX "Link a copy of libcxx into libfuzzer" ON)
-mark_as_advanced(COMPILER_RT_FUZZER_LINK_LIBCXX)
 
 set(COMPILER_RT_ASAN_SHADOW_SCALE ""
     CACHE STRING "Override the shadow scale to be used in ASan runtime")
@@ -60,9 +58,6 @@ if (NOT COMPILER_RT_ASAN_SHADOW_SCALE STREQUAL "")
   set(COMPILER_RT_ASAN_SHADOW_SCALE_FLAG
       -D${COMPILER_RT_ASAN_SHADOW_SCALE_DEFINITION})
 endif()
-
-set(COMPILER_RT_HWASAN_WITH_INTERCEPTORS ON CACHE BOOLEAN
-    "Enable libc interceptors in HWASan (testing mode)")
 
 set(COMPILER_RT_BAREMETAL_BUILD OFF CACHE BOOLEAN
   "Build for a bare-metal target.")
@@ -329,6 +324,14 @@ else()
 endif()
 
 append_list_if(COMPILER_RT_HAS_LIBC c SANITIZER_COMMON_LINK_LIBS)
+
+if(ANDROID)
+# Put the Sanitizer shared libraries in the global group. For more details, see
+# android-changes-for-ndk-developers.md#changes-to-library-search-order
+  if (COMPILER_RT_HAS_Z_GLOBAL)
+    list(APPEND SANITIZER_COMMON_LINK_FLAGS -Wl,-z,global)
+  endif()
+endif()
 
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Fuchsia")
   list(APPEND SANITIZER_COMMON_LINK_FLAGS -Wl,-z,defs,-z,now,-z,relro)

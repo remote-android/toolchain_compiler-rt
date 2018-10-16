@@ -22,9 +22,10 @@ namespace __hwasan {
 class HwasanThread {
  public:
   static HwasanThread *Create(thread_callback_t start_routine, void *arg);
+  static void TSDDtor(void *tsd);
   void Destroy();
 
-  void Init();
+  void Init();  // Should be called from the thread itself.
   thread_return_t ThreadStart();
 
   uptr stack_top() { return stack_top_; }
