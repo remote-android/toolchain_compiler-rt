@@ -29,8 +29,7 @@
 namespace __hwasan {
 
 struct Metadata {
-  u32 requested_size : 31;  // sizes are < 2G.
-  u32 right_aligned  : 1;
+  u32 requested_size;  // sizes are < 4G.
   u32 alloc_context_id;
 };
 
@@ -45,21 +44,26 @@ struct HwasanMapUnmapCallback {
 };
 
 static const uptr kMaxAllowedMallocSize = 2UL << 30;  // 2G
+static const uptr kRegionSizeLog = 20;
+static const uptr kNumRegions = SANITIZER_MMAP_RANGE_SIZE >> kRegionSizeLog;
+typedef TwoLevelByteMap<(kNumRegions >> 12), 1 << 12> ByteMap;
 
-struct AP64 {
-  static const uptr kSpaceBeg = ~0ULL;
-  static const uptr kSpaceSize = 0x2000000000ULL;
+struct AP32 {
+  static const uptr kSpaceBeg = 0;
+  static const u64 kSpaceSize = SANITIZER_MMAP_RANGE_SIZE;
   static const uptr kMetadataSize = sizeof(Metadata);
-  typedef __sanitizer::VeryDenseSizeClassMap SizeClassMap;
-  using AddressSpaceView = LocalAddressSpaceView;
+  typedef __sanitizer::CompactSizeClassMap SizeClassMap;
+  static const uptr kRegionSizeLog = __hwasan::kRegionSizeLog;
+  typedef __hwasan::ByteMap ByteMap;
   typedef HwasanMapUnmapCallback MapUnmapCallback;
   static const uptr kFlags = 0;
 };
-typedef SizeClassAllocator64<AP64> PrimaryAllocator;
+typedef SizeClassAllocator32<AP32> PrimaryAllocator;
 typedef SizeClassAllocatorLocalCache<PrimaryAllocator> AllocatorCache;
 typedef LargeMmapAllocator<HwasanMapUnmapCallback> SecondaryAllocator;
 typedef CombinedAllocator<PrimaryAllocator, AllocatorCache,
                           SecondaryAllocator> Allocator;
+
 
 void AllocatorSwallowThreadLocalCache(AllocatorCache *cache);
 
