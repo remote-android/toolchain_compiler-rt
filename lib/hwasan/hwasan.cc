@@ -159,11 +159,6 @@ void GetStackTrace(BufferedStackTrace *stack, uptr max_s, uptr pc, uptr bp,
                 request_fast_unwind);
 }
 
-void PrintWarning(uptr pc, uptr bp) {
-  GET_FATAL_STACK_TRACE_PC_BP(pc, bp);
-  ReportInvalidAccess(&stack, 0);
-}
-
 static void HWAsanCheckFailed(const char *file, int line, const char *cond,
                               u64 v1, u64 v2) {
   Report("HWAddressSanitizer CHECK failed: %s:%d \"%s\" (0x%zx, 0x%zx)\n", file,
@@ -234,8 +229,8 @@ static InternalMmapVectorNoCtor<FrameDescriptionArray> AllFrames;
 void InitFrameDescriptors(uptr b, uptr e) {
   FrameDescription *beg = reinterpret_cast<FrameDescription *>(b);
   FrameDescription *end = reinterpret_cast<FrameDescription *>(e);
-  // Must have at least one entry, which we can use for a linked list.
-  CHECK_GE(end - beg, 1U);
+  if (beg == end)
+    return;
   AllFrames.push_back({beg, end});
   if (Verbosity())
     for (FrameDescription *frame_descr = beg; frame_descr < end; frame_descr++)
@@ -288,6 +283,8 @@ void __hwasan_init() {
 
   __sanitizer_set_report_path(common_flags()->log_path);
 
+  AndroidTestTlsSlot();
+
   DisableCoreDumperIfNecessary();
 
   __hwasan_shadow_init();
@@ -297,6 +294,7 @@ void __hwasan_init() {
 
   MadviseShadow();
 
+  SetPrintfAndReportCallback(AppendToErrorMessageBuffer);
   // This may call libc -> needs initialized shadow.
   AndroidLogInit();
 
