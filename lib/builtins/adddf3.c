@@ -7,8 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements double-precision soft-float addition with the IEEE-754
-// default rounding (to nearest, ties to even).
+// This file implements double-precision soft-float addition.
 //
 //===----------------------------------------------------------------------===//
 
