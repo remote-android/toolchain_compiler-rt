@@ -174,10 +174,6 @@ uptr internal_filesize(fd_t fd) {
   return (uptr)st.st_size;
 }
 
-uptr internal_dup(int oldfd) {
-  return dup(oldfd);
-}
-
 uptr internal_dup2(int oldfd, int newfd) {
   return dup2(oldfd, newfd);
 }
@@ -282,8 +278,6 @@ uptr internal_waitpid(int pid, int *status, int options) {
 
 // ----------------- sanitizer_common.h
 bool FileExists(const char *filename) {
-  if (ShouldMockFailureToOpen(filename))
-    return false;
   struct stat st;
   if (stat(filename, &st))
     return false;

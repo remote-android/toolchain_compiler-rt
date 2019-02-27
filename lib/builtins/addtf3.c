@@ -7,7 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements quad-precision soft-float addition.
+// This file implements quad-precision soft-float addition with the IEEE-754
+// default rounding (to nearest, ties to even).
 //
 //===----------------------------------------------------------------------===//
 
