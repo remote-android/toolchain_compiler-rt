@@ -1,9 +1,8 @@
 //=-- lsan_allocator.h ----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -81,6 +80,7 @@ const uptr kAllocatorSize  = 0x20000000000ULL;  // 2T.
 const uptr kAllocatorSpace = 0x600000000000ULL;
 const uptr kAllocatorSize  = 0x40000000000ULL;  // 4T.
 # endif
+template <typename AddressSpaceViewTy>
 struct AP64 {  // Allocator64 parameters. Deliberately using a short name.
   static const uptr kSpaceBeg = kAllocatorSpace;
   static const uptr kSpaceSize = kAllocatorSize;
@@ -88,11 +88,31 @@ struct AP64 {  // Allocator64 parameters. Deliberately using a short name.
   typedef DefaultSizeClassMap SizeClassMap;
   typedef NoOpMapUnmapCallback MapUnmapCallback;
   static const uptr kFlags = 0;
+  using AddressSpaceView = AddressSpaceViewTy;
 };
 
-typedef SizeClassAllocator64<AP64> PrimaryAllocator;
+template <typename AddressSpaceView>
+using PrimaryAllocatorASVT = SizeClassAllocator64<AP64<AddressSpaceView>>;
+using PrimaryAllocator = PrimaryAllocatorASVT<LocalAddressSpaceView>;
 #endif
-typedef SizeClassAllocatorLocalCache<PrimaryAllocator> AllocatorCache;
+
+template <typename AddressSpaceView>
+using AllocatorCacheASVT =
+    SizeClassAllocatorLocalCache<PrimaryAllocatorASVT<AddressSpaceView>>;
+using AllocatorCache = AllocatorCacheASVT<LocalAddressSpaceView>;
+
+template <typename AddressSpaceView>
+using SecondaryAllocatorASVT =
+    LargeMmapAllocator<NoOpMapUnmapCallback, DefaultLargeMmapAllocatorPtrArray,
+                       AddressSpaceView>;
+
+template <typename AddressSpaceView>
+using AllocatorASVT =
+    CombinedAllocator<PrimaryAllocatorASVT<AddressSpaceView>,
+                      AllocatorCacheASVT<AddressSpaceView>,
+                      SecondaryAllocatorASVT<AddressSpaceView>,
+                      AddressSpaceView>;
+using Allocator = AllocatorASVT<LocalAddressSpaceView>;
 
 AllocatorCache *GetAllocatorCache();
 

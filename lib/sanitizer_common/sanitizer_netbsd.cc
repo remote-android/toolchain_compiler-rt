@@ -1,9 +1,8 @@
 //===-- sanitizer_netbsd.cc -----------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -167,6 +166,11 @@ uptr internal_filesize(fd_t fd) {
   if (internal_fstat(fd, &st))
     return -1;
   return (uptr)st.st_size;
+}
+
+uptr internal_dup(int oldfd) {
+  DEFINE__REAL(int, dup, int a);
+  return _REAL(dup, oldfd);
 }
 
 uptr internal_dup2(int oldfd, int newfd) {
