@@ -11,6 +11,7 @@ set(HWASAN_RTL_SOURCES
   hwasan_memintrinsics.cc
   hwasan_poisoning.cc
   hwasan_report.cc
+  hwasan_tag_mismatch_aarch64.S
   hwasan_thread.cc
   hwasan_thread_list.cc
   )
